@@ -29,7 +29,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
 import javax.annotation.CheckForNull;
 
-/**
+/** 同步抽象类,提供了比Reentrantlock更高级的同步机制
  * A synchronization abstraction supporting waiting on arbitrary boolean conditions.
  *
  * <p>This class is intended as a replacement for {@link ReentrantLock}. Code using {@code Monitor}
@@ -200,6 +200,29 @@ import javax.annotation.CheckForNull;
  * @author Martin Buchholz
  * @since 10.0
  */
+/**
+ * Monitor类 - 一个支持任意布尔条件等待的同步抽象类。
+ *
+ * <p>该类的设计目的是作为{@link ReentrantLock}的替代品。使用{@code Monitor}的代码
+ * 比使用{@code ReentrantLock}更不容易出错且更易读，同时不会带来明显的性能损失。
+ * {@code Monitor}通过优化条件评估和信号机制，甚至可能获得性能提升。信号机制完全是
+ * <a href="http://en.wikipedia.org/wiki/Monitor_(synchronization)#Implicit_signaling">隐式的</a>。
+ * 通过消除显式信号，该类可以保证：
+ * 1. 当条件变为true时只唤醒一个线程(避免使用signalAll导致的"信号风暴")
+ * 2. 不会丢失信号(避免由于不正确使用signal导致的"挂起")
+ *
+ * <p>线程状态说明:
+ * - 当一个线程进入(entered)但尚未离开(left)监视器时，称该线程占用(occupy)了监视器
+ * - 任何时刻只能有一个线程占用监视器
+ * - 监视器是可重入的，所以一个线程可以多次进入监视器，但必须相同次数地离开
+ * - enter和leave操作具有与Java内置同步原语相同的同步语义
+ */
+
+/**
+ * 基本使用模式1 - void返回类型的enter方法：
+ * 必须立即跟随try/finally块以确保线程正确离开监视器
+ */
+
 @J2ktIncompatible
 @GwtIncompatible
 @SuppressWarnings("GuardedBy") // TODO(b/35466881): Fix or suppress.

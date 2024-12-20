@@ -25,7 +25,16 @@ import java.util.Set;
 /**
  * Contains static utility methods pertaining to primitive types and their corresponding wrapper
  * types.
- *
+ * 实现包装类和原始类之间的转换
+ * boolean.class <-> Boolean.class
+ * byte.class    <-> Byte.class
+ * char.class    <-> Character.class
+ * double.class  <-> Double.class
+ * float.class   <-> Float.class
+ * int.class     <-> Integer.class
+ * long.class    <-> Long.class
+ * short.class   <-> Short.class
+ * void.class    <-> Void.class
  * @author Kevin Bourrillion
  * @since 1.0
  */
