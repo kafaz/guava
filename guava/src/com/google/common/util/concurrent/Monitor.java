@@ -532,7 +532,7 @@ public final class Monitor {
    * If a {@code Guard} is passed into any method of a {@code Monitor} other than
    * the one it is
    * associated with, an {@link IllegalMonitorStateException} is thrown.
-   *
+   * question: Guard 怎么保证调用时使用的函数是线程安全的?
    * @since 10.0
    */
   public abstract static class Guard {
@@ -601,21 +601,40 @@ public final class Monitor {
   }
 
   /**
-   * Creates a new {@linkplain Guard guard} for this monitor.
+   * 为Monitor创建一个新的Guard(守卫)条件。Guard用于控制线程的等待条件。
+   * 
+   * <p>Guard在实现上采用了模板方法模式:
+   * 1. 抽象父类定义基础框架
+   * 2. 子类实现具体的条件判断逻辑
    *
-   * @param isSatisfied the new guard's boolean condition (see
-   *                    {@link Guard#isSatisfied
-   *                    isSatisfied()})
-   * @since 21.0 (but only since 33.4.0 in the Android flavor)
+   * <p>使用示例:
+   * <pre>{@code
+   * Monitor monitor = new Monitor();
+   * // 创建一个等待队列非空的Guard
+   * Guard queueNotEmpty = monitor.newGuard(() -> !queue.isEmpty());
+   * 
+   * // 等待直到队列有数据
+   * monitor.enterWhen(queueNotEmpty); 
+   * try {
+   *   // 处理队列数据
+   * } finally {
+   *   monitor.leave();
+   * }
+   * }</pre>
+   *
+   * @param isSatisfied 一个返回布尔值的函数,用于判断Guard条件是否满足
+   * @return 一个新的Guard实例,绑定到当前Monitor
+   * @throws NullPointerException 如果isSatisfied为null
+   * @since 21.0 (Android 33.4.0开始支持)
    */
   public Guard newGuard(final BooleanSupplier isSatisfied) {
-    checkNotNull(isSatisfied, "isSatisfied");
-    return new Guard(this) {
-      @Override
-      public boolean isSatisfied() {
-        return isSatisfied.getAsBoolean();
-      }
-    };
+      checkNotNull(isSatisfied, "isSatisfied");
+      return new Guard(this) {
+          @Override
+          public boolean isSatisfied() {
+              return isSatisfied.getAsBoolean(); // 委托给传入的条件判断函数
+          }
+      };
   }
 
   /** Enters this monitor. Blocks indefinitely. */
@@ -707,30 +726,35 @@ public final class Monitor {
   }
 
   /**
-   * Enters this monitor when the guard is satisfied. Blocks indefinitely, but may
-   * be interrupted.
+   * 当Guard条件满足时进入Monitor。无限期阻塞,但可被中断。
    *
-   * @throws InterruptedException if interrupted while waiting
+   * @throws InterruptedException 如果在等待时被中断
    */
   public void enterWhen(Guard guard) throws InterruptedException {
-    if (guard.monitor != this) {
-      throw new IllegalMonitorStateException();
-    }
-    final ReentrantLock lock = this.lock;
-    boolean signalBeforeWaiting = lock.isHeldByCurrentThread();
-    lock.lockInterruptibly();
-
-    boolean satisfied = false;
-    try {
-      if (!guard.isSatisfied()) {
-        await(guard, signalBeforeWaiting);
+      // 验证Guard是否属于当前Monitor
+      if (guard.monitor != this) {
+          throw new IllegalMonitorStateException();
       }
-      satisfied = true;
-    } finally {
-      if (!satisfied) {
-        leave();
+      
+      final ReentrantLock lock = this.lock;
+      // 检查当前线程是否已持有锁,用于后续信号处理
+      boolean signalBeforeWaiting = lock.isHeldByCurrentThread();
+      // 获取锁,支持中断
+      lock.lockInterruptibly();
+  
+      boolean satisfied = false;
+      try {
+          if (!guard.isSatisfied()) {
+              // 条件不满足,进入等待,可能发送信号
+              await(guard, signalBeforeWaiting);
+          }
+          satisfied = true;
+      } finally {
+          // 如果条件未满足(可能由于中断),释放锁
+          if (!satisfied) {
+              leave();
+          }
       }
-    }
   }
 
   /**
@@ -750,67 +774,70 @@ public final class Monitor {
   }
 
   /**
-   * Enters this monitor when the guard is satisfied. Blocks at most the given
-   * time, including both
-   * the time to acquire the lock and the time to wait for the guard to be
-   * satisfied, and may be
-   * interrupted.
+   * 当Guard条件满足时进入Monitor,带超时限制。
+   * 阻塞时间包含获取锁的时间和等待Guard条件满足的时间。
+   * 支持中断。
    *
-   * @return whether the monitor was entered, which guarantees that the guard is
-   *         now satisfied
-   * @throws InterruptedException if interrupted while waiting
+   * @return 是否成功进入Monitor(同时意味着Guard条件满足)
+   * @throws InterruptedException 如果等待过程中被中断
    */
-  @SuppressWarnings({
-      "GoodTime", // should accept a java.time.Duration
-      "LabelledBreakTarget", // TODO(b/345814817): Maybe fix.
-  })
   public boolean enterWhen(Guard guard, long time, TimeUnit unit) throws InterruptedException {
-    final long timeoutNanos = toSafeNanos(time, unit);
-    if (guard.monitor != this) {
-      throw new IllegalMonitorStateException();
-    }
-    final ReentrantLock lock = this.lock;
-    boolean reentrant = lock.isHeldByCurrentThread();
-    long startTime = 0L;
-
-    locked: {
-      if (!fair) {
-        // Check interrupt status to get behavior consistent with fair case.
-        if (Thread.interrupted()) {
-          throw new InterruptedException();
-        }
-        if (lock.tryLock()) {
-          break locked;
-        }
+      // 将时间转换为纳秒,并进行安全性处理
+      final long timeoutNanos = toSafeNanos(time, unit);
+      
+      // 验证Guard归属
+      if (guard.monitor != this) {
+          throw new IllegalMonitorStateException();
       }
-      startTime = initNanoTime(timeoutNanos);
-      if (!lock.tryLock(time, unit)) {
-        return false;
-      }
-    }
+  
+      final ReentrantLock lock = this.lock;
+      // 检查是否重入
+      boolean reentrant = lock.isHeldByCurrentThread();
+      // 记录开始时间
+      long startTime = 0L;
 
-    boolean satisfied = false;
-    boolean threw = true;
-    try {
-      satisfied = guard.isSatisfied()
-          || awaitNanos(
-              guard,
-              (startTime == 0L) ? timeoutNanos : remainingNanos(startTime, timeoutNanos),
-              reentrant);
-      threw = false;
-      return satisfied;
-    } finally {
-      if (!satisfied) {
-        try {
-          // Don't need to signal if timed out, but do if interrupted
-          if (threw && !reentrant) {
-            signalNextWaiter();
+      //note: 代码块标签, 有什么好处吗?
+      locked: {
+          if (!fair) {
+              // 非公平锁模式:先检查中断状态,保持与公平模式行为一致
+              if (Thread.interrupted()) {
+                  throw new InterruptedException();
+              }
+              // 尝试立即获取锁
+              if (lock.tryLock()) {
+                  break locked;
+              }
           }
-        } finally {
-          lock.unlock();
-        }
+          // 记录开始时间并尝试在限定时间内获取锁
+          startTime = initNanoTime(timeoutNanos);
+          if (!lock.tryLock(time, unit)) {
+              return false;  // 获取锁超时
+          }
       }
-    }
+  
+      boolean satisfied = false;
+      boolean threw = true;  // 用于追踪是否发生异常
+      try {
+          // 检查Guard条件是否满足,或在剩余时间内等待
+          satisfied = guard.isSatisfied()
+              || awaitNanos(
+                  guard,
+                  (startTime == 0L) ? timeoutNanos : remainingNanos(startTime, timeoutNanos),
+                  reentrant);
+          threw = false;
+          return satisfied;
+      } finally {
+          if (!satisfied) {
+              try {
+                  // 仅在发生异常且非重入时发送信号
+                  if (threw && !reentrant) {
+                      signalNextWaiter();
+                  }
+              } finally {
+                  lock.unlock();
+              }
+          }
+      }
   }
 
   /** Enters this monitor when the guard is satisfied. Blocks indefinitely. */
@@ -920,28 +947,33 @@ public final class Monitor {
   }
 
   /**
-   * Enters this monitor if the guard is satisfied. Blocks indefinitely acquiring
-   * the lock, but does
-   * not wait for the guard to be satisfied.
+   * 尝试进入Monitor并立即检查Guard条件。
+   * 会阻塞等待获取锁,但不会等待Guard条件满足。
+   * 如果条件不满足会立即释放锁并返回false。
    *
-   * @return whether the monitor was entered, which guarantees that the guard is
-   *         now satisfied
+   * @param guard Guard条件
+   * @return 是否成功进入Monitor(Guard条件满足)
    */
   public boolean enterIf(Guard guard) {
-    if (guard.monitor != this) {
-      throw new IllegalMonitorStateException();
-    }
-    final ReentrantLock lock = this.lock;
-    lock.lock();
-
-    boolean satisfied = false;
-    try {
-      return satisfied = guard.isSatisfied();
-    } finally {
-      if (!satisfied) {
-        lock.unlock();
+      // 校验Guard必须属于当前Monitor
+      if (guard.monitor != this) {
+          throw new IllegalMonitorStateException();
       }
-    }
+      
+      final ReentrantLock lock = this.lock;
+      lock.lock();  // 获取锁,可能阻塞
+  
+      boolean satisfied = false;
+      try {
+          // 检查Guard条件并记录结果
+          return satisfied = guard.isSatisfied();
+      } finally {
+          if (!satisfied) {
+              // 条件不满足时释放锁
+              lock.unlock();
+          }
+          // 条件满足时保持锁定
+      }
   }
 
   /**
@@ -1498,26 +1530,29 @@ public final class Monitor {
   }
 
   /*
-   * Methods that loop waiting on a guard's condition until the guard is
-   * satisfied, while recording
-   * this fact so that other threads know to check our guard and signal us. It's
-   * caller's
-   * responsibility to ensure that the guard is *not* currently satisfied.
+   * 等待Guard条件满足的核心方法。
+   * 该方法会循环等待直到Guard条件满足,同时记录等待状态以便其他线程可以检查并发送信号。
+   * 调用方负责确保调用时Guard条件未满足。
    */
-
   @GuardedBy("lock")
   private void await(Guard guard, boolean signalBeforeWaiting) throws InterruptedException {
-    if (signalBeforeWaiting) {
-      signalNextWaiter();
-    }
-    beginWaitingFor(guard);
-    try {
-      do {
-        guard.condition.await();
-      } while (!guard.isSatisfied());
-    } finally {
-      endWaitingFor(guard);
-    }
+      // 如果需要,在等待前发送信号给其他等待者
+      if (signalBeforeWaiting) {
+          signalNextWaiter();
+      }
+      
+      // 记录开始等待状态
+      beginWaitingFor(guard);
+      try {
+          do {
+              // 在Guard关联的Condition上等待
+              guard.condition.await();
+          } while (!guard.isSatisfied());  // 循环直到条件满足
+      } finally {
+          // 清理等待状态
+          endWaitingFor(guard);
+      }
+  }
   }
 
   @GuardedBy("lock")
