@@ -18,14 +18,16 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
+import java.io.Serializable;
+import java.util.Objects;
+
+import javax.annotation.CheckForNull;
+
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.base.CharMatcher;
-import com.google.common.base.Objects;
 import com.google.common.base.Strings;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.Immutable;
-import java.io.Serializable;
-import javax.annotation.CheckForNull;
 
 /**
  * An immutable representation of a host and port.
@@ -153,55 +155,70 @@ public final class HostAndPort implements Serializable {
   }
 
   /**
+   * 将自由格式的字符串分割为主机名和端口号，不进行严格验证。
    * Split a freeform string into a host and port, without strict validation.
    *
-   * <p>Note that the host-only formats will leave the port field undefined. You can use {@link
-   * #withDefaultPort(int)} to patch in a default value.
+   * <p>注意:如果输入字符串只包含主机名,端口字段将保持未定义状态。你可以使用 {@link
+   * #withDefaultPort(int)} 来设置一个默认的端口值。
+   * Note that the host-only formats will leave the port field undefined. You can use withDefaultPort() 
+   * to patch in a default value.
    *
-   * @param hostPortString the input string to parse.
-   * @return if parsing was successful, a populated HostAndPort object.
-   * @throws IllegalArgumentException if nothing meaningful could be parsed.
+   * @param hostPortString 要解析的输入字符串 (例如: "foo.com:8080" 或 "foo.com")
+   *                      the input string to parse.
+   * @return 如果解析成功,返回一个包含主机名和端口信息的 HostAndPort 对象
+   *         if parsing was successful, a populated HostAndPort object.
+   * @throws IllegalArgumentException 如果无法从输入字符串中解析出有效的主机名和端口信息
+   *                                 if nothing meaningful could be parsed.
    */
-  @CanIgnoreReturnValue // TODO(b/219820829): consider removing
+  @CanIgnoreReturnValue // TODO(b/219820829): 考虑移除此注解 consider removing
   public static HostAndPort fromString(String hostPortString) {
+    // 确保输入字符串不为null
     checkNotNull(hostPortString);
     String host;
     String portString = null;
+    // 标记是否存在未被方括号包围的冒号(用于判断可能的IPv6地址)
     boolean hasBracketlessColons = false;
 
     if (hostPortString.startsWith("[")) {
-      String[] hostAndPort = getHostAndPortFromBracketedHost(hostPortString);
-      host = hostAndPort[0];
-      portString = hostAndPort[1];
+        // 处理被方括号包围的主机名(通常是IPv6地址)
+        String[] hostAndPort = getHostAndPortFromBracketedHost(hostPortString);
+        host = hostAndPort[0];        // 提取主机名部分(不含方括号)
+        portString = hostAndPort[1];  // 提取端口号字符串
     } else {
-      int colonPos = hostPortString.indexOf(':');
-      if (colonPos >= 0 && hostPortString.indexOf(':', colonPos + 1) == -1) {
-        // Exactly 1 colon. Split into host:port.
-        host = hostPortString.substring(0, colonPos);
-        portString = hostPortString.substring(colonPos + 1);
-      } else {
-        // 0 or 2+ colons. Bare hostname or IPv6 literal.
-        host = hostPortString;
-        hasBracketlessColons = (colonPos >= 0);
-      }
+        int colonPos = hostPortString.indexOf(':');
+        if (colonPos >= 0 && hostPortString.indexOf(':', colonPos + 1) == -1) {
+            // 只有一个冒号的情况，按host:port格式拆分
+            host = hostPortString.substring(0, colonPos);
+            portString = hostPortString.substring(colonPos + 1);
+        } else {
+            // 没有冒号或有多个冒号的情况
+            // 可能是: 1.纯主机名 2.未加方括号的IPv6地址
+            host = hostPortString;
+            hasBracketlessColons = (colonPos >= 0);
+        }
     }
 
+    // 默认端口号为-1(NO_PORT)表示未指定端口
     int port = NO_PORT;
     if (!Strings.isNullOrEmpty(portString)) {
-      // Try to parse the whole port string as a number.
-      // Java accepts leading plus signs. We don't want to.
-      checkArgument(
-          !portString.startsWith("+") && CharMatcher.ascii().matchesAllOf(portString),
-          "Unparseable port number: %s",
-          hostPortString);
-      try {
-        port = Integer.parseInt(portString);
-      } catch (NumberFormatException e) {
-        throw new IllegalArgumentException("Unparseable port number: " + hostPortString);
-      }
-      checkArgument(isValidPort(port), "Port number out of range: %s", hostPortString);
+        // 验证端口号格式:
+        // 1.不允许带加号前缀
+        // 2.必须只包含ASCII字符
+        checkArgument(
+            !portString.startsWith("+") && CharMatcher.ascii().matchesAllOf(portString),
+            "Unparseable port number: %s",
+            hostPortString);
+        try {
+            // 尝试将端口号解析为整数
+            port = Integer.parseInt(portString);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Unparseable port number: " + hostPortString);
+        }
+        // 验证端口号是否在有效范围内(0-65535)
+        checkArgument(isValidPort(port), "Port number out of range: %s", hostPortString);
     }
 
+    // 创建新的HostAndPort实例
     return new HostAndPort(host, port, hasBracketlessColons);
   }
 
