@@ -204,7 +204,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
    * This must be a (2^n)-1 as it is used as a mask.
    * 这必须是 (2^n)-1 的形式，因为它被用作掩码。
    */
-  static final int DRAIN_THRESHOLD = 0x3F;
+  static final int DRAIN_THRESHOLD = 0x3F; // 0011 1111
 
   /**
    * Maximum number of entries to be drained in a single cleanup run. This applies
@@ -376,50 +376,72 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       initialCapacity = (int) min(initialCapacity, maxWeight);
     }
 
-    // Find the lowest power-of-two segmentCount that exceeds concurrencyLevel,
-    // unless
-    // maximumSize/Weight is specified in which case ensure that each segment gets
-    // at least 10
-    // entries. The special casing for size-based eviction is only necessary because
-    // that eviction
-    // happens per segment instead of globally, so too many segments compared to the
-    // maximum size
-    // will result in random eviction behavior.
+    // Initialize segment shift and count
+    // 初始化段偏移量和段数量
     int segmentShift = 0;
     int segmentCount = 1;
+
+    // Determine the number of segments based on concurrency level and weight
+    // constraints
+    // 基于并发级别和权重约束确定段的数量
     while (segmentCount < concurrencyLevel
         && (!evictsBySize() || segmentCount * 20L <= maxWeight)) {
       ++segmentShift;
-      segmentCount <<= 1;
+      segmentCount <<= 1; // Double the segment count (左移1位相当于乘2)
     }
+
+    // Calculate the shift value for segment lookup (32 bits - shift)
+    // 计算段查找的偏移值（32位 - 位移量）
     this.segmentShift = 32 - segmentShift;
+    // Create segment mask for hash value mapping
+    // 创建段掩码用于哈希值映射
     segmentMask = segmentCount - 1;
 
+    // Create the segments array with calculated count
+    // 使用计算出的段数量创建段数组
     this.segments = newSegmentArray(segmentCount);
 
+    // Calculate the initial capacity for each segment
+    // 计算每个段的初始容量
     int segmentCapacity = initialCapacity / segmentCount;
+    // Round up if there's a remainder
+    // 如果有余数，向上取整
     if (segmentCapacity * segmentCount < initialCapacity) {
       ++segmentCapacity;
     }
 
+    // Find the nearest power of 2 for segment size
+    // 找到大于等于 segmentCapacity 的最小2的幂
     int segmentSize = 1;
     while (segmentSize < segmentCapacity) {
       segmentSize <<= 1;
     }
 
     if (evictsBySize()) {
-      // Ensure sum of segment max weights = overall max weights
+      // If using weight-based eviction, distribute max weight among segments
+      // 如果使用基于权重的淘汰策略，在各个段之间分配最大权重
       long maxSegmentWeight = maxWeight / segmentCount + 1;
       long remainder = maxWeight % segmentCount;
+
       for (int i = 0; i < this.segments.length; ++i) {
+        // Adjust weight distribution to ensure total equals maxWeight
+        // 调整权重分配以确保总和等于maxWeight
         if (i == remainder) {
           maxSegmentWeight--;
         }
-        this.segments[i] = createSegment(segmentSize, maxSegmentWeight, builder.getStatsCounterSupplier().get());
+        this.segments[i] = createSegment(
+            segmentSize,
+            maxSegmentWeight,
+            builder.getStatsCounterSupplier().get());
       }
     } else {
+      // If not using weight-based eviction, create segments with no weight limit
+      // 如果不使用基于权重的淘汰策略，创建没有权重限制的段
       for (int i = 0; i < this.segments.length; ++i) {
-        this.segments[i] = createSegment(segmentSize, UNSET_INT, builder.getStatsCounterSupplier().get());
+        this.segments[i] = createSegment(
+            segmentSize,
+            UNSET_INT, // No weight limit 无权重限制
+            builder.getStatsCounterSupplier().get());
       }
     }
   }
@@ -487,28 +509,47 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
   enum Strength {
     /*
      * TODO(kevinb): If we strongly reference the value and aren't loading, we
-     * needn't wrap the
-     * value. This could save ~8 bytes per entry.
+     * needn't wrap the value.
+     * This could save ~8 bytes per entry.
+     * 
+     * 待办(kevinb)：如果我们使用强引用且不需要加载，我们可以不包装这个值。
+     * 这可以为每个条目节省约8字节的空间。
      */
 
+    /**
+     * 强引用：不会被垃圾收集器回收的普通引用
+     * Strong reference: normal references that won't be collected by the garbage
+     * collector
+     */
     STRONG {
       @Override
       <K, V> ValueReference<K, V> referenceValue(
           Segment<K, V> segment, ReferenceEntry<K, V> entry, V value, int weight) {
+        // 根据权重选择不同的强引用实现
+        // Choose different strong reference implementation based on weight
         return (weight == 1)
-            ? new StrongValueReference<K, V>(value)
-            : new WeightedStrongValueReference<K, V>(value, weight);
+            ? new StrongValueReference<K, V>(value) // 普通强引用
+            : new WeightedStrongValueReference<K, V>(value, weight); // 带权重的强引用
       }
 
       @Override
       Equivalence<Object> defaultEquivalence() {
+        // 使用equals()方法进行相等性比较
+        // Use equals() method for equality comparison
         return Equivalence.equals();
       }
     },
+
+    /**
+     * 软引用：在内存不足时可能被回收的引用
+     * Soft reference: references that might be collected when memory is tight
+     */
     SOFT {
       @Override
       <K, V> ValueReference<K, V> referenceValue(
           Segment<K, V> segment, ReferenceEntry<K, V> entry, V value, int weight) {
+        // 根据权重选择不同的软引用实现
+        // Choose different soft reference implementation based on weight
         return (weight == 1)
             ? new SoftValueReference<K, V>(segment.valueReferenceQueue, value, entry)
             : new WeightedSoftValueReference<K, V>(
@@ -517,13 +558,22 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
       @Override
       Equivalence<Object> defaultEquivalence() {
+        // 使用身份比较（==）进行相等性判断
+        // Use identity comparison (==) for equality
         return Equivalence.identity();
       }
     },
+
+    /**
+     * 弱引用：在下次GC时就可能被回收的引用
+     * Weak reference: references that will be collected on next GC
+     */
     WEAK {
       @Override
       <K, V> ValueReference<K, V> referenceValue(
           Segment<K, V> segment, ReferenceEntry<K, V> entry, V value, int weight) {
+        // 根据权重选择不同的弱引用实现
+        // Choose different weak reference implementation based on weight
         return (weight == 1)
             ? new WeakValueReference<K, V>(segment.valueReferenceQueue, value, entry)
             : new WeightedWeakValueReference<K, V>(
@@ -532,15 +582,23 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
       @Override
       Equivalence<Object> defaultEquivalence() {
+        // 使用身份比较（==）进行相等性判断
+        // Use identity comparison (==) for equality
         return Equivalence.identity();
       }
     };
 
-    /** Creates a reference for the given value according to this value strength. */
+    /**
+     * 根据当前引用强度创建对应的值引用
+     * Creates a reference for the given value according to this value strength.
+     */
     abstract <K, V> ValueReference<K, V> referenceValue(
         Segment<K, V> segment, ReferenceEntry<K, V> entry, V value, int weight);
 
     /**
+     * 返回用于比较和哈希在此强度下引用的键或值的默认等价性策略。
+     * 除非用户明确指定替代策略，否则将使用此策略。
+     * 
      * Returns the default equivalence strategy used to compare and hash keys or
      * values referenced
      * at this strength. This strategy will be used unless the user explicitly
