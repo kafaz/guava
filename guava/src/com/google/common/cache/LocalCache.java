@@ -3725,6 +3725,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         return removeEntryFromChain(first, entry);
       }
     }
+
     /**
      * 从链表中移除指定的条目，并重新构建链表
      * 该方法会复制entry之前的所有有效节点，并将它们与entry之后的节点链接起来
@@ -3761,6 +3762,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       // 返回新的链表头
       return newFirst;
     }
+
     /**
      * 移除一个已被垃圾回收的条目
      * 该方法处理条目被回收的后续清理工作，包括：
@@ -3844,45 +3846,76 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
     }
 
-    /** Removes an entry whose value has been garbage collected. */
-    @CanIgnoreReturnValue
+    /**
+     * 移除一个值已被垃圾回收的缓存条目
+     * 
+     * 该方法会在值引用被GC回收后调用，用于清理缓存中的无效条目。
+     * 方法会在持有段锁的情况下执行，确保线程安全。
+     *
+     * @param key            要移除的条目的键
+     * @param hash           键的哈希值
+     * @param valueReference 被回收的值的引用
+     * @return 如果找到并成功移除了条目返回true，否则返回false
+     */
+    @CanIgnoreReturnValue // 表示调用者可以忽略返回值
     boolean reclaimValue(K key, int hash, ValueReference<K, V> valueReference) {
+      // 获取段锁，确保接下来的操作是线程安全的
       lock();
       try {
+        // 预计的新计数值（当前计数-1）
         int newCount = this.count - 1;
+        // 获取当前段的哈希表
         AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+        // 计算目标条目在哈希表中的索引位置
         int index = hash & (table.length() - 1);
+        // 获取该桶中的第一个条目
         ReferenceEntry<K, V> first = table.get(index);
 
+        // 遍历该桶中的条目链表
         for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+          // 获取当前条目的键
           K entryKey = e.getKey();
+          // 检查是否找到目标条目：
+          // 1. 哈希值相等
+          // 2. 键不为null
+          // 3. 键等价（使用自定义的等价性比较器）
           if (e.getHash() == hash
               && entryKey != null
               && map.keyEquivalence.equivalent(key, entryKey)) {
+            // 获取当前条目的值引用
             ValueReference<K, V> v = e.getValueReference();
+            // 确认是否是我们要找的值引用
             if (v == valueReference) {
+              // 增加修改计数，用于快速失败机制
               ++modCount;
+              // 从链中移除该条目，并重新构建链表
               ReferenceEntry<K, V> newFirst = removeValueFromChain(
-                  first,
-                  e,
-                  entryKey,
-                  hash,
-                  valueReference.get(),
-                  valueReference,
-                  RemovalCause.COLLECTED);
+                  first, // 原链表头
+                  e, // 要移除的条目
+                  entryKey, // 条目的键
+                  hash, // 哈希值
+                  valueReference.get(), // 条目的值
+                  valueReference, // 值引用
+                  RemovalCause.COLLECTED // 移除原因：被GC收集
+              );
+              // 更新计数
               newCount = this.count - 1;
+              // 更新桶的头节点
               table.set(index, newFirst);
-              this.count = newCount; // write-volatile
-              return true;
+              // 更新计数值（volatile写，确保可见性）
+              this.count = newCount;
+              return true; // 成功找到并移除条目
             }
-            return false;
+            return false; // 找到键但值引用不匹配
           }
         }
 
-        return false;
+        return false; // 未找到目标条目
       } finally {
+        // 释放段锁
         unlock();
-        if (!isHeldByCurrentThread()) { // don't clean up inside of put
+        // 如果当前线程没有持有锁（不是在put操作中），执行后续清理
+        if (!isHeldByCurrentThread()) { // 不在put操作中才清理
           postWriteCleanup();
         }
       }
