@@ -14,28 +14,41 @@
 
 package com.google.common.cache;
 
+import javax.annotation.CheckForNull;
+
 import com.google.common.annotations.GwtIncompatible;
 import com.google.common.cache.LocalCache.ValueReference;
-import javax.annotation.CheckForNull;
 
 /**
  * An entry in a reference map.
+ * 引用映射中的一个条目。
  *
- * <p>Entries in the map can be in the following states:
+ * Entries in the map can be in the following states:
+ * 映射中的条目可能处于以下状态：
  *
- * <p>Valid:
+ * Valid:
+ * 有效状态：
  *
  * <ul>
- *   <li>Live: valid key/value are set
- *   <li>Loading: loading is pending
+ * <li>Live: valid key/value are set
+ * 活跃：已设置有效的键值对
+ * 
+ * <li>Loading: loading is pending
+ * 加载中：正在等待加载
  * </ul>
  *
- * <p>Invalid:
+ * Invalid:
+ * 无效状态：
  *
  * <ul>
- *   <li>Expired: time expired (key/value may still be set)
- *   <li>Collected: key/value was partially collected, but not yet cleaned up
- *   <li>Unset: marked as unset, awaiting cleanup or reuse
+ * <li>Expired: time expired (key/value may still be set)
+ * 过期：时间已过期（键值对可能仍然存在）
+ * 
+ * <li>Collected: key/value was partially collected, but not yet cleaned up
+ * 已回收：键值对已被部分回收，但尚未清理
+ * 
+ * <li>Unset: marked as unset, awaiting cleanup or reuse
+ * 未设置：标记为未设置，等待清理或重用
  * </ul>
  */
 @GwtIncompatible
@@ -59,9 +72,15 @@ interface ReferenceEntry<K, V> {
   K getKey();
 
   /*
-   * Used by entries that use access order. Access entries are maintained in a doubly-linked list.
-   * New entries are added at the tail of the list at write time; stale entries are expired from
-   * the head of the list.
+   * Used by entries that use access order. Access entries are maintained in a
+   * doubly-linked list.
+   * 用于使用访问顺序的条目。访问顺序的条目通过双向链表维护。
+   * 
+   * New entries are added at the tail of the list at write time;
+   * 新的条目在写入时被添加到链表尾部；
+   * 
+   * stale entries are expired from the head of the list.
+   * 过期的条目从链表头部移除。
    */
 
   /** Returns the time that this entry was last accessed, in ns. */
@@ -85,8 +104,10 @@ interface ReferenceEntry<K, V> {
   void setPreviousInAccessQueue(ReferenceEntry<K, V> previous);
 
   /*
-   * Implemented by entries that use write order. Write entries are maintained in a doubly-linked
-   * list. New entries are added at the tail of the list at write time and stale entries are
+   * Implemented by entries that use write order. Write entries are maintained in
+   * a doubly-linked
+   * list. New entries are added at the tail of the list at write time and stale
+   * entries are
    * expired from the head of the list.
    */
 

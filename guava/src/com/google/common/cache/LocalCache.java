@@ -610,13 +610,22 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
   /** Creates new entries. */
   enum EntryFactory {
+    /**
+     * 强引用条目 - 最基本的实现
+     * 不记录访问时间和写入时间
+     */
     STRONG {
       @Override
-      <K, V> ReferenceEntry<K, V> newEntry(
+      <K, V> ReferenceEntry<K, V> newEtry(
           Segment<K, V> segment, K key, int hash, @CheckForNull ReferenceEntry<K, V> next) {
         return new StrongEntry<>(key, hash, next);
       }
     },
+
+    /**
+     * 强引用条目 + 访问时间记录
+     * 记录最后访问时间，用于支持基于访问时间的过期
+     */
     STRONG_ACCESS {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -631,10 +640,15 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
           ReferenceEntry<K, V> newNext,
           K key) {
         ReferenceEntry<K, V> newEntry = super.copyEntry(segment, original, newNext, key);
-        copyAccessEntry(original, newEntry);
+        copyAccessEntry(original, newEntry); // 复制访问时间信息
         return newEntry;
       }
     },
+
+    /**
+     * 强引用条目 + 写入时间记录
+     * 记录最后写入时间，用于支持基于写入时间的过期
+     */
     STRONG_WRITE {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -653,6 +667,11 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         return newEntry;
       }
     },
+
+    /**
+     * 强引用条目 + 访问时间记录 + 写入时间记录
+     * 同时记录访问和写入时间，支持两种过期策略
+     */
     STRONG_ACCESS_WRITE {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -672,6 +691,11 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         return newEntry;
       }
     },
+
+    /**
+     * 弱引用条目 - 基本实现
+     * 使用 WeakReference 包装 key，允许 key 被 GC 回收
+     */
     WEAK {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -679,6 +703,10 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         return new WeakEntry<>(segment.keyReferenceQueue, key, hash, next);
       }
     },
+
+    /**
+     * 弱引用条目 + 访问时间记录
+     */
     WEAK_ACCESS {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -697,6 +725,10 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         return newEntry;
       }
     },
+
+    /**
+     * 弱引用条目 + 写入时间记录
+     */
     WEAK_WRITE {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -715,6 +747,10 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         return newEntry;
       }
     },
+
+    /**
+     * 弱引用条目 + 访问时间记录 + 写入时间记录
+     */
     WEAK_ACCESS_WRITE {
       @Override
       <K, V> ReferenceEntry<K, V> newEntry(
@@ -821,69 +857,88 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
   /** A reference to a value. */
   interface ValueReference<K, V> {
-    /** Returns the value. Does not block or throw exceptions. */
+    /**
+     * Returns the value. Does not block or throw exceptions.
+     * 返回值。不会阻塞或抛出异常。
+     */
     @CheckForNull
     V get();
 
     /**
      * Waits for a value that may still be loading. Unlike get(), this method can
-     * block (in the case
-     * of FutureValueReference).
+     * block
+     * (in the case of FutureValueReference).
+     * 等待可能仍在加载的值。与get()不同，此方法可能会阻塞
+     * （在FutureValueReference的情况下）。
      *
      * @throws ExecutionException if the loading thread throws an exception
+     *                            如果加载线程抛出异常
      * @throws ExecutionError     if the loading thread throws an error
+     *                            如果加载线程抛出错误
      */
     V waitForValue() throws ExecutionException;
 
     /**
      * Returns the weight of this entry. This is assumed to be static between calls
      * to setValue.
+     * 返回此条目的权重。在调用setValue之间，该值假定为静态的。
      */
     int getWeight();
 
     /**
-     * Returns the entry associated with this value reference, or {@code null} if
-     * this value
+     * Returns the entry associated with this value reference, or null if this value
      * reference is independent of any entry.
+     * 返回与此值引用关联的条目，如果此值引用独立于任何条目，则返回null。
      */
     @CheckForNull
     ReferenceEntry<K, V> getEntry();
 
     /**
      * Creates a copy of this reference for the given entry.
+     * 为给定条目创建此引用的副本。
      *
-     * <p>
-     * {@code value} may be null only for a loading reference.
+     * value may be null only for a loading reference.
+     * 仅对于正在加载的引用，value可以为null。
      */
     ValueReference<K, V> copyFor(
-        ReferenceQueue<V> queue, @CheckForNull V value, ReferenceEntry<K, V> entry);
+        ReferenceQueue<V> queue,
+        @CheckForNull V value,
+        ReferenceEntry<K, V> entry);
 
     /**
-     * Notify pending loads that a new value was set. This is only relevant to
-     * loading value
-     * references.
+     * Notify pending loads that a new value was set.
+     * This is only relevant to loading value references.
+     * 通知待处理的加载操作已设置新值。
+     * 这仅与正在加载的值引用相关。
      */
     void notifyNewValue(@CheckForNull V newValue);
 
     /**
      * Returns true if a new value is currently loading, regardless of whether there
-     * is an existing
-     * value. It is assumed that the return value of this method is constant for any
-     * given
-     * ValueReference instance.
+     * is
+     * an existing value. It is assumed that the return value of this method is
+     * constant
+     * for any given ValueReference instance.
+     * 如果当前正在加载新值，则返回true，无论是否存在现有值。
+     * 假定对于任何给定的ValueReference实例，此方法的返回值都是常量。
      */
     boolean isLoading();
 
     /**
      * Returns true if this reference contains an active value, meaning one that is
-     * still considered
-     * present in the cache. Active values consist of live values, which are
-     * returned by cache
-     * lookups, and dead values, which have been evicted but awaiting removal.
-     * Non-active values
-     * consist strictly of loading values, though during refresh a value may be both
-     * active and
-     * loading.
+     * still
+     * considered present in the cache. Active values consist of:
+     * 如果此引用包含活动值，则返回true，表示该值仍被认为存在于缓存中。活动值包括：
+     * 
+     * - live values: which are returned by cache lookups
+     * 活跃值：通过缓存查找返回的值
+     * - dead values: which have been evicted but awaiting removal
+     * 死亡值：已被逐出但等待移除的值
+     * 
+     * Non-active values consist strictly of loading values, though during refresh a
+     * value
+     * may be both active and loading.
+     * 非活动值严格由加载值组成，但在刷新期间，一个值可能既是活动的又是加载中的。
      */
     boolean isActive();
   }
@@ -1965,8 +2020,16 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     segmentFor(hash).reclaimValue(entry.getKey(), hash, valueReference);
   }
 
+  /**
+   * 回收指定条目中已被GC回收的键
+   * 
+   * @param entry 需要回收键的缓存条目
+   */
   void reclaimKey(ReferenceEntry<K, V> entry) {
+    // 获取条目的哈希值
     int hash = entry.getHash();
+
+    // 根据哈希值定位到对应的段(Segment)，并在该段中执行键的回收操作
     segmentFor(hash).reclaimKey(entry, hash);
   }
 
@@ -2105,152 +2168,211 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
     /*
      * Segments maintain a table of entry lists that are ALWAYS kept in a consistent
-     * state, so can
-     * be read without locking. Next fields of nodes are immutable (final). All list
-     * additions are
-     * performed at the front of each bin. This makes it easy to check changes, and
-     * also fast to
-     * traverse. When nodes would otherwise be changed, new nodes are created to
-     * replace them. This
-     * works well for hash tables since the bin lists tend to be short. (The average
-     * length is less
-     * than two.)
+     * state,
+     * so can be read without locking.
+     * 段(Segments)维护着一个始终保持一致状态的条目列表表，因此可以在无锁的情况下进行读取。
+     * 
+     * Next fields of nodes are immutable (final). All list additions are performed
+     * at the
+     * front of each bin.
+     * 节点的next字段是不可变的(final)。所有列表添加操作都在每个桶(bin)的前端执行。
+     * 
+     * This makes it easy to check changes, and also fast to traverse. When nodes
+     * would
+     * otherwise be changed, new nodes are created to replace them.
+     * 这使得检查变更容易，遍历也很快。当需要改变节点时，会创建新节点来替换它们。
+     * 
+     * This works well for hash tables since the bin lists tend to be short.
+     * (The average length is less than two.)
+     * 这种方式对哈希表很有效，因为桶列表往往很短。(平均长度小于2)
      *
      * Read operations can thus proceed without locking, but rely on selected uses
-     * of volatiles to
-     * ensure that completed write operations performed by other threads are
-     * noticed. For most
-     * purposes, the "count" field, tracking the number of elements, serves as that
-     * volatile
-     * variable ensuring visibility. This is convenient because this field needs to
-     * be read in many
-     * read operations anyway:
+     * of
+     * volatiles to ensure that completed write operations performed by other
+     * threads are noticed.
+     * 因此读操作可以在无锁的情况下进行，但依赖于对volatile变量的选择性使用，
+     * 以确保能察觉到其他线程完成的写操作。
+     * 
+     * For most purposes, the "count" field, tracking the number of elements, serves
+     * as
+     * that volatile variable ensuring visibility.
+     * 在大多数情况下，追踪元素数量的"count"字段作为确保可见性的volatile变量。
+     * 
+     * This is convenient because this field needs to be read in many read
+     * operations anyway:
+     * 这很方便，因为无论如何这个字段在许多读操作中都需要被读取：
      *
      * - All (unsynchronized) read operations must first read the "count" field, and
-     * should not look
-     * at table entries if it is 0.
+     * should
+     * not look at table entries if it is 0.
+     * - 所有（非同步的）读操作必须首先读取"count"字段，如果它是0就不应该查看表项。
      *
      * - All (synchronized) write operations should write to the "count" field after
-     * structurally
-     * changing any bin. The operations must not take any action that could even
-     * momentarily cause a
-     * concurrent read operation to see inconsistent data. This is made easier by
-     * the nature of the
-     * read operations in Map. For example, no operation can reveal that the table
-     * has grown but the
-     * threshold has not yet been updated, so there are no atomicity requirements
-     * for this with
-     * respect to reads.
+     * structurally changing any bin.
+     * - 所有（同步的）写操作在对任何桶进行结构性更改后都应该写入"count"字段。
+     * 
+     * The operations must not take any action that could even momentarily cause a
+     * concurrent
+     * read operation to see inconsistent data.
+     * 这些操作不能采取任何可能导致并发读操作看到不一致数据的行为，即使是暂时的。
+     * 
+     * This is made easier by the nature of the read operations in Map. For example,
+     * no
+     * operation can reveal that the table has grown but the threshold has not yet
+     * been updated.
+     * 这因Map中读操作的特性而变得更容易。例如，没有操作能够显示出表已经增长但阈值尚未更新的情况。
      *
      * As a guide, all critical volatile reads and writes to the count field are
-     * marked in code
-     * comments.
+     * marked
+     * in code comments.
+     * 作为指导，所有对count字段的关键volatile读写操作都在代码注释中标记。
      */
 
+    /**
+     * 对LocalCache的弱引用。使用@Weak注解标记，允许在不需要时被GC回收。
+     * 主要用于访问缓存的全局配置和策略。
+     */
     @Weak
     final LocalCache<K, V> map;
 
-    /** The number of live elements in this segment's region. */
+    /**
+     * 该段中存活元素的数量。
+     * volatile保证多线程可见性，是实现无锁读的关键。
+     * 其他线程通过读取这个值来感知写入操作的完成。
+     */
     volatile int count;
 
-    /** The weight of the live elements in this segment's region. */
+    /**
+     * 该段中存活元素的总权重。
+     * 用于基于权重的驱逐策略，由@GuardedBy注解保证只能在持有锁时访问。
+     */
     @GuardedBy("this")
     long totalWeight;
 
     /**
-     * Number of updates that alter the size of the table. This is used during
-     * bulk-read methods to
-     * make sure they see a consistent snapshot: If modCounts change during a
-     * traversal of segments
-     * loading size or checking containsValue, then we might have an inconsistent
-     * view of state so
-     * (usually) must retry.
+     * 表结构修改的计数器。
+     * 用于在批量读取操作时确保看到一致的快照：
+     * 如果在遍历段过程中modCount发生变化，说明可能看到不一致的状态，通常需要重试。
      */
     int modCount;
 
     /**
-     * The table is expanded when its size exceeds this threshold. (The value of
-     * this field is
-     * always {@code (int) (capacity * 0.75)}.)
+     * 扩容阈值。当表的大小超过此阈值时进行扩容。
+     * 值始终是容量的75%（capacity * 0.75）。
      */
     int threshold;
 
-    /** The per-segment table. */
+    /**
+     * 每个段的哈希表。
+     * 使用AtomicReferenceArray保证原子性，volatile保证可见性。
+     */
     @CheckForNull
     volatile AtomicReferenceArray<ReferenceEntry<K, V>> table;
 
-    /** The maximum weight of this segment. UNSET_INT if there is no maximum. */
+    /**
+     * 该段的最大权重限制。
+     * 如果没有设置最大值则为UNSET_INT。
+     */
     final long maxSegmentWeight;
 
     /**
-     * The key reference queue contains entries whose keys have been garbage
-     * collected, and which
-     * need to be cleaned up internally.
+     * 键引用队列。
+     * 包含已被垃圾回收的键的条目，这些条目需要内部清理。
+     * 当使用弱引用键时才会创建此队列。
      */
     @CheckForNull
     final ReferenceQueue<K> keyReferenceQueue;
 
     /**
-     * The value reference queue contains value references whose values have been
-     * garbage collected,
-     * and which need to be cleaned up internally.
+     * 值引用队列。
+     * 包含值已被垃圾回收的值引用，这些引用需要内部清理。
+     * 当使用软引用或弱引用值时才会创建此队列。
      */
     @CheckForNull
     final ReferenceQueue<V> valueReferenceQueue;
 
     /**
-     * The recency queue is used to record which entries were accessed for updating
-     * the access
-     * list's ordering. It is drained as a batch operation when either the
-     * DRAIN_THRESHOLD is
-     * crossed or a write occurs on the segment.
+     * 最近访问队列。
+     * 用于记录哪些条目被访问过，以更新访问列表的顺序。
+     * 当达到DRAIN_THRESHOLD阈值或段发生写入操作时，
+     * 会批量处理（排空）该队列。
      */
     final Queue<ReferenceEntry<K, V>> recencyQueue;
 
     /**
-     * A counter of the number of reads since the last write, used to drain queues
-     * on a small
-     * fraction of read operations.
+     * 读操作计数器。
+     * 记录自上次写入以来的读取次数，用于在少量读操作时排空队列。
+     * 使用AtomicInteger保证原子性。
      */
     final AtomicInteger readCount = new AtomicInteger();
 
     /**
-     * A queue of elements currently in the map, ordered by write time. Elements are
-     * added to the
-     * tail of the queue on write.
+     * 写入时间顺序队列。
+     * 保存当前map中的元素，按写入时间排序。
+     * 元素在写入时添加到队列尾部。
+     * 由@GuardedBy注解保证只能在持有锁时访问。
      */
     @GuardedBy("this")
     final Queue<ReferenceEntry<K, V>> writeQueue;
 
     /**
-     * A queue of elements currently in the map, ordered by access time. Elements
-     * are added to the
-     * tail of the queue on access (note that writes count as accesses).
+     * 访问时间顺序队列。
+     * 保存当前map中的元素，按访问时间排序。
+     * 元素在被访问时（注意写入也计为访问）添加到队列尾部。
+     * 由@GuardedBy注解保证只能在持有锁时访问。
      */
     @GuardedBy("this")
     final Queue<ReferenceEntry<K, V>> accessQueue;
 
-    /** Accumulates cache statistics. */
+    /**
+     * 缓存统计计数器。
+     * 累积记录缓存的统计信息，如命中率、加载时间等。
+     */
     final StatsCounter statsCounter;
 
+    /**
+     * Segment段的构造函数
+     *
+     * @param map              所属的LocalCache实例
+     * @param initialCapacity  初始容量
+     * @param maxSegmentWeight 段的最大权重限制
+     * @param statsCounter     统计计数器
+     */
     Segment(
         LocalCache<K, V> map,
         int initialCapacity,
         long maxSegmentWeight,
         StatsCounter statsCounter) {
+      // 保存对LocalCache的引用，用于访问缓存的全局配置
       this.map = map;
+
+      // 设置段的最大权重限制，用于基于权重的驱逐策略
       this.maxSegmentWeight = maxSegmentWeight;
+
+      // 设置统计计数器，用于收集性能指标
       this.statsCounter = checkNotNull(statsCounter);
+
+      // 初始化哈希表，使用给定的初始容量创建条目数组
       initTable(newEntryArray(initialCapacity));
 
+      // 如果使用弱引用键，创建键引用队列用于处理被GC回收的键
+      // 否则设置为null
       keyReferenceQueue = map.usesKeyReferences() ? new ReferenceQueue<>() : null;
 
+      // 如果使用软引用或弱引用值，创建值引用队列用于处理被GC回收的值
+      // 否则设置为null
       valueReferenceQueue = map.usesValueReferences() ? new ReferenceQueue<>() : null;
 
+      // 如果使用访问顺序，创建并发访问队列用于记录最近访问的条目
+      // 否则使用一个空队列实现（丢弃所有操作）
       recencyQueue = map.usesAccessQueue() ? new ConcurrentLinkedQueue<>() : LocalCache.discardingQueue();
 
+      // 如果使用写入顺序，创建写入队列用于记录写入顺序
+      // 否则使用一个空队列实现
       writeQueue = map.usesWriteQueue() ? new WriteQueue<>() : LocalCache.discardingQueue();
 
+      // 如果使用访问顺序，创建访问队列用于维护访问顺序
+      // 否则使用一个空队列实现
       accessQueue = map.usesAccessQueue() ? new AccessQueue<>() : LocalCache.discardingQueue();
     }
 
@@ -2762,12 +2884,23 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
     @GuardedBy("this")
     void drainKeyReferenceQueue() {
+      // 用于存储从引用队列中取出的引用
       Reference<? extends K> ref;
+      // 清理计数器
       int i = 0;
+
+      // 不断从引用队列中获取并处理被GC回收的键引用
       while ((ref = keyReferenceQueue.poll()) != null) {
+        // 由于Reference本身就是ReferenceEntry，所以可以直接转换
+        // 这里的类型转换是安全的，因为我们知道放入队列的都是ReferenceEntry
         @SuppressWarnings("unchecked")
         ReferenceEntry<K, V> entry = (ReferenceEntry<K, V>) ref;
+
+        // 通知map处理已经被回收的键对应的条目
         map.reclaimKey(entry);
+
+        // 如果清理的数量达到上限DRAIN_MAX，则退出循环
+        // 这是为了防止清理时间过长影响其他操作
         if (++i == DRAIN_MAX) {
           break;
         }
@@ -3548,6 +3681,19 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
     }
 
+    /**
+     * 从链表中移除指定条目的值引用
+     * 该方法必须在持有段锁的情况下调用（由@GuardedBy("this")保证）
+     *
+     * @param first          链表的第一个节点
+     * @param entry          要移除的条目
+     * @param key            条目的键（可能为null）
+     * @param hash           键的哈希值
+     * @param value          条目的值
+     * @param valueReference 值的引用
+     * @param cause          移除的原因
+     * @return 更新后的链表头节点
+     */
     @GuardedBy("this")
     @CheckForNull
     ReferenceEntry<K, V> removeValueFromChain(
@@ -3558,37 +3704,72 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         V value,
         ValueReference<K, V> valueReference,
         RemovalCause cause) {
+
+      // 将移除事件加入通知队列，以便异步通知监听器
+      // 包含：键、哈希值、值、权重和移除原因
       enqueueNotification(key, hash, value, valueReference.getWeight(), cause);
+
+      // 从写入顺序队列中移除条目
       writeQueue.remove(entry);
+      // 从访问顺序队列中移除条目
       accessQueue.remove(entry);
 
+      // 检查值是否正在加载中
       if (valueReference.isLoading()) {
+        // 如果值正在加载，通知加载过程该值已被设置为null
         valueReference.notifyNewValue(null);
+        // 直接返回原链表头，不修改链表结构
         return first;
       } else {
+        // 如果值不是正在加载，则从链表中移除整个条目
         return removeEntryFromChain(first, entry);
       }
     }
-
+    /**
+     * 从链表中移除指定的条目，并重新构建链表
+     * 该方法会复制entry之前的所有有效节点，并将它们与entry之后的节点链接起来
+     *
+     * @param first 原链表的第一个节点
+     * @param entry 要移除的目标节点
+     * @return 新链表的第一个节点，如果所有节点都被回收则返回null
+     */
     @GuardedBy("this")
     @CheckForNull
     ReferenceEntry<K, V> removeEntryFromChain(
         ReferenceEntry<K, V> first, ReferenceEntry<K, V> entry) {
+      // 记录当前计数
       int newCount = count;
+      // 获取要移除节点之后的第一个节点作为新的起始点
       ReferenceEntry<K, V> newFirst = entry.getNext();
+
+      // 遍历entry之前的所有节点
       for (ReferenceEntry<K, V> e = first; e != entry; e = e.getNext()) {
+        // 尝试复制当前节点，并将其next指向newFirst
         ReferenceEntry<K, V> next = copyEntry(e, newFirst);
         if (next != null) {
+          // 如果复制成功，更新newFirst为新复制的节点
           newFirst = next;
         } else {
+          // 如果复制失败（节点已被GC回收），移除该节点
           removeCollectedEntry(e);
+          // 减少计数
           newCount--;
         }
       }
+      // 更新段的计数值
       this.count = newCount;
+      // 返回新的链表头
       return newFirst;
     }
-
+    /**
+     * 移除一个已被垃圾回收的条目
+     * 该方法处理条目被回收的后续清理工作，包括：
+     * 1. 发送移除通知
+     * 2. 从写入队列移除
+     * 3. 从访问队列移除
+     *
+     * @param entry 需要被移除的条目
+     */
     @GuardedBy("this")
     void removeCollectedEntry(ReferenceEntry<K, V> entry) {
       enqueueNotification(
@@ -3601,37 +3782,64 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       accessQueue.remove(entry);
     }
 
-    /** Removes an entry whose key has been garbage collected. */
-    @CanIgnoreReturnValue
+    /**
+     * 移除一个键已被垃圾回收的条目
+     * 该方法在确定键已被GC回收后调用，用于清理缓存中的无效条目
+     *
+     * @param entry 要移除的条目引用
+     * @param hash  条目的哈希值
+     * @return 如果成功移除返回true，如果条目不存在返回false
+     */
+    @CanIgnoreReturnValue // 表示返回值可以被调用者忽略
     boolean reclaimKey(ReferenceEntry<K, V> entry, int hash) {
+      // 获取段锁，确保接下来的操作是线程安全的
       lock();
       try {
+        // 预先计算移除一个元素后的新计数值
         int newCount = count - 1;
+
+        // 获取当前段的哈希表引用
         AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+        // 计算条目在哈希表中的索引位置（哈希值与表长度-1进行位与运算）
         int index = hash & (table.length() - 1);
+        // 获取该桶中的第一个条目
         ReferenceEntry<K, V> first = table.get(index);
 
+        // 遍历该桶中的条目链表
         for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+          // 如果找到了目标条目（引用相等）
           if (e == entry) {
+            // 增加修改计数，用于快速失败机制
             ++modCount;
+
+            // 从链表中移除该条目，并重新构建链表
+            // 同时处理相关的值引用和触发移除通知
             ReferenceEntry<K, V> newFirst = removeValueFromChain(
-                first,
-                e,
-                e.getKey(),
-                hash,
-                e.getValueReference().get(),
-                e.getValueReference(),
-                RemovalCause.COLLECTED);
+                first, // 原链表头
+                e, // 要移除的条目
+                e.getKey(), // 条目的键
+                hash, // 哈希值
+                e.getValueReference().get(), // 条目的值
+                e.getValueReference(), // 值的引用
+                RemovalCause.COLLECTED // 移除原因：被GC收集
+            );
+
+            // 重新计算新的计数值
             newCount = this.count - 1;
+            // 更新桶的头节点为新的链表头
             table.set(index, newFirst);
-            this.count = newCount; // write-volatile
-            return true;
+            // 更新计数值（volatile写，确保其他线程可见）
+            this.count = newCount;
+
+            return true; // 返回true表示成功找到并移除了条目
           }
         }
 
-        return false;
+        return false; // 如果遍历完链表都没找到目标条目，返回false
       } finally {
+        // 释放段锁
         unlock();
+        // 执行写操作后的清理工作（如处理引用队列、维护统计信息等）
         postWriteCleanup();
       }
     }
@@ -4522,8 +4730,8 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     }
 
     // This implementation is patterned after ConcurrentHashMap, but without the
-    // locking. The only
-    // way for it to return a false negative would be for the target value to jump
+    // only way for it to return a false negative would be for the target value to
+    // jump
     // around in the map
     // such that none of the subsequent iterations observed it, despite the fact
     // that at every point
