@@ -3921,36 +3921,66 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
     }
 
-    @CanIgnoreReturnValue
+    /**
+     * 移除一个正在加载中的值
+     * 
+     * 该方法在并发加载场景下被调用，用于：
+     * 1. 如果值正在加载中，将值引用恢复为旧值
+     * 2. 如果值加载已结束但未成功，从缓存中移除该条目
+     * 
+     * @param key            要处理的键
+     * @param hash           键的哈希值
+     * @param valueReference 要移除的加载中的值引用
+     * @return 如果找到并成功处理了条目返回true，否则返回false
+     */
+    @CanIgnoreReturnValue // 表示调用者可以忽略返回值
     boolean removeLoadingValue(K key, int hash, LoadingValueReference<K, V> valueReference) {
+      // 获取段锁，确保线程安全
       lock();
       try {
+        // 获取当前段的哈希表
         AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+        // 计算桶索引：哈希值与(表长度-1)进行位与运算
         int index = hash & (table.length() - 1);
+        // 获取桶中的第一个条目
         ReferenceEntry<K, V> first = table.get(index);
 
+        // 遍历桶中的条目链表
         for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+          // 获取当前条目的键
           K entryKey = e.getKey();
+          // 检查是否找到目标条目：
+          // 1. 哈希值相等
+          // 2. 键不为null
+          // 3. 键等价（使用map的键等价性比较器）
           if (e.getHash() == hash
               && entryKey != null
               && map.keyEquivalence.equivalent(key, entryKey)) {
+            // 获取当前条目的值引用
             ValueReference<K, V> v = e.getValueReference();
+            // 检查是否是目标值引用
             if (v == valueReference) {
+              // 如果值引用仍在加载中（活动状态）
               if (valueReference.isActive()) {
+                // 恢复为旧的值引用
                 e.setValueReference(valueReference.getOldValue());
               } else {
+                // 如果值引用已不活动，从链表中移除整个条目
                 ReferenceEntry<K, V> newFirst = removeEntryFromChain(first, e);
+                // 更新桶的头节点
                 table.set(index, newFirst);
               }
-              return true;
+              return true; // 成功处理了条目
             }
-            return false;
+            return false; // 找到键但值引用不匹配
           }
         }
 
-        return false;
+        return false; // 未找到目标条目
       } finally {
+        // 释放段锁
         unlock();
+        // 执行写操作后的清理工作（如处理引用队列等）
         postWriteCleanup();
       }
     }
