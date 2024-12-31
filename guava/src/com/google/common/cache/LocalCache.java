@@ -1752,6 +1752,15 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
   /** References a weak value. */
   static class WeakValueReference<K, V> extends WeakReference<V> implements ValueReference<K, V> {
+    // WeakReference提供:
+    // - 弱引用语义
+    // - GC自动处理
+    // - 引用队列集成
+
+    // ValueReference提供:
+    // - 缓存条目关联
+    // - 值状态管理
+    // - 复制和通知机制
     final ReferenceEntry<K, V> entry;
 
     WeakValueReference(ReferenceQueue<V> queue, V referent, ReferenceEntry<K, V> entry) {
@@ -4243,9 +4252,25 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
    * optimized for the
    * current model.
    */
+  /**
+   * 自定义的写入顺序队列，用于管理缓存条目的驱逐顺序
+   * 该队列与ReferenceEntry紧密集成，依赖ReferenceEntry来维护节点间的链接关系
+   *
+   * 实现假设：
+   * 1. 所有在map中的元素都必须在这个队列中
+   * 2. 所有不在队列中的元素都不在map中
+   *
+   * 自定义队列的优势：
+   * 1. 可以在copyWriteEntry操作中替换队列中间的元素
+   * 2. contains方法针对当前模型高度优化
+   */
   static final class WriteQueue<K, V> extends AbstractQueue<ReferenceEntry<K, V>> {
+    /**
+     * 队列的哨兵节点（头节点）
+     * 使用匿名内部类实现，维护了一个双向循环链表结构
+     */
     final ReferenceEntry<K, V> head = new AbstractReferenceEntry<K, V>() {
-
+      // 返回最大时间戳，确保头节点总是在队列末尾
       @Override
       public long getWriteTime() {
         return Long.MAX_VALUE;
@@ -4253,10 +4278,12 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
 
       @Override
       public void setWriteTime(long time) {
+        // 空实现，头节点时间戳不可修改
       }
 
+      // 使用@Weak注解标记引用，防止内存泄漏
       @Weak
-      ReferenceEntry<K, V> nextWrite = this;
+      ReferenceEntry<K, V> nextWrite = this; // 初始指向自身
 
       @Override
       public ReferenceEntry<K, V> getNextInWriteQueue() {
@@ -4269,7 +4296,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
 
       @Weak
-      ReferenceEntry<K, V> previousWrite = this;
+      ReferenceEntry<K, V> previousWrite = this; // 初始指向自身
 
       @Override
       public ReferenceEntry<K, V> getPreviousInWriteQueue() {
@@ -4282,39 +4309,61 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
     };
 
-    // implements Queue
+    // Queue接口实现
 
+    /**
+     * 将条目添加到队列尾部
+     * 
+     * @param entry 要添加的条目
+     * @return 永远返回true
+     */
     @Override
     public boolean offer(ReferenceEntry<K, V> entry) {
-      // unlink
+      // 断开entry原有的链接
       connectWriteOrder(entry.getPreviousInWriteQueue(), entry.getNextInWriteQueue());
 
-      // add to tail
+      // 添加到队列尾部（head之前）
       connectWriteOrder(head.getPreviousInWriteQueue(), entry);
       connectWriteOrder(entry, head);
 
       return true;
     }
 
+    /**
+     * 查看队列头部的元素，但不移除
+     * 
+     * @return 队列头部元素，如果队列为空返回null
+     */
     @CheckForNull
     @Override
     public ReferenceEntry<K, V> peek() {
       ReferenceEntry<K, V> next = head.getNextInWriteQueue();
-      return (next == head) ? null : next;
+      return (next == head) ? null : next; // 如果下一个是head，说明队列为空
     }
 
+    /**
+     * 移除并返回队列头部的元素
+     * 
+     * @return 队列头部元素，如果队列为空返回null
+     */
     @CheckForNull
     @Override
     public ReferenceEntry<K, V> poll() {
       ReferenceEntry<K, V> next = head.getNextInWriteQueue();
       if (next == head) {
-        return null;
+        return null; // 队列为空
       }
 
-      remove(next);
+      remove(next); // 移除元素
       return next;
     }
 
+    /**
+     * 从队列中移除指定元素
+     * 
+     * @param o 要移除的元素
+     * @return 如果元素存在且被移除返回true
+     */
     @Override
     @SuppressWarnings("unchecked")
     @CanIgnoreReturnValue
@@ -4328,6 +4377,10 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       return next != NullEntry.INSTANCE;
     }
 
+    /**
+     * 检查元素是否在队列中
+     * 通过检查元素的next引用是否为NullEntry来判断
+     */
     @Override
     @SuppressWarnings("unchecked")
     public boolean contains(Object o) {
@@ -4335,11 +4388,19 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       return e.getNextInWriteQueue() != NullEntry.INSTANCE;
     }
 
+    /**
+     * 检查队列是否为空
+     * 通过检查head的next是否指向自身来判断
+     */
     @Override
     public boolean isEmpty() {
       return head.getNextInWriteQueue() == head;
     }
 
+    /**
+     * 计算队列大小
+     * 通过遍历整个队列来计数
+     */
     @Override
     public int size() {
       int size = 0;
@@ -4349,19 +4410,28 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       return size;
     }
 
+    /**
+     * 清空队列
+     * 清除所有节点的引用关系，最后重置head的指向
+     */
     @Override
     public void clear() {
       ReferenceEntry<K, V> e = head.getNextInWriteQueue();
       while (e != head) {
         ReferenceEntry<K, V> next = e.getNextInWriteQueue();
-        nullifyWriteOrder(e);
+        nullifyWriteOrder(e); // 清除节点的引用
         e = next;
       }
 
+      // 重置head指向自身
       head.setNextInWriteQueue(head);
       head.setPreviousInWriteQueue(head);
     }
 
+    /**
+     * 返回队列的迭代器
+     * 使用AbstractSequentialIterator简化迭代器实现
+     */
     @Override
     public Iterator<ReferenceEntry<K, V>> iterator() {
       return new AbstractSequentialIterator<ReferenceEntry<K, V>>(peek()) {
