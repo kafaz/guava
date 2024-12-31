@@ -347,85 +347,77 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
    */
   LocalCache(
       CacheBuilder<? super K, ? super V> builder, @CheckForNull CacheLoader<? super K, V> loader) {
+    // 这是LocalCache的构造函数,用于创建一个新的空缓存Map。主要做以下几件事:
+    
+    // 1. 初始化基本配置参数
+    // - 设置并发级别(concurrencyLevel)
+    // - 设置键值引用强度(keyStrength/valueStrength) 
+    // - 设置键值等价性比较器(keyEquivalence/valueEquivalence)
+    // - 设置最大权重、权重计算器(maxWeight/weigher)
+    // - 设置过期时间(expireAfterAccessNanos/expireAfterWriteNanos)
+    // - 设置刷新时间(refreshNanos)
     concurrencyLevel = min(builder.getConcurrencyLevel(), MAX_SEGMENTS);
-
     keyStrength = builder.getKeyStrength();
     valueStrength = builder.getValueStrength();
-
     keyEquivalence = builder.getKeyEquivalence();
     valueEquivalence = builder.getValueEquivalence();
-
     maxWeight = builder.getMaximumWeight();
     weigher = builder.getWeigher();
     expireAfterAccessNanos = builder.getExpireAfterAccessNanos();
     expireAfterWriteNanos = builder.getExpireAfterWriteNanos();
     refreshNanos = builder.getRefreshNanos();
 
+    // 2. 设置移除监听器和通知队列
     removalListener = builder.getRemovalListener();
     removalNotificationQueue = (removalListener == NullListener.INSTANCE)
         ? LocalCache.discardingQueue()
         : new ConcurrentLinkedQueue<>();
 
+    // 3. 设置时间计数器、Entry工厂、统计计数器和默认加载器
     ticker = builder.getTicker(recordsTime());
     entryFactory = EntryFactory.getFactory(keyStrength, usesAccessEntries(), usesWriteEntries());
     globalStatsCounter = builder.getStatsCounterSupplier().get();
     defaultLoader = loader;
 
+    // 4. 计算初始容量
     int initialCapacity = min(builder.getInitialCapacity(), MAXIMUM_CAPACITY);
     if (evictsBySize() && !customWeigher()) {
       initialCapacity = (int) min(initialCapacity, maxWeight);
     }
 
-    // Initialize segment shift and count
-    // 初始化段偏移量和段数量
+    // 5. 计算分段数量和位移
     int segmentShift = 0;
     int segmentCount = 1;
-
-    // Determine the number of segments based on concurrency level and weight
-    // constraints
-    // 基于并发级别和权重约束确定段的数量
     while (segmentCount < concurrencyLevel
         && (!evictsBySize() || segmentCount * 20L <= maxWeight)) {
       ++segmentShift;
-      segmentCount <<= 1; // Double the segment count (左移1位相当于乘2)
+      segmentCount <<= 1;
     }
-
-    // Calculate the shift value for segment lookup (32 bits - shift)
-    // 计算段查找的偏移值（32位 - 位移量）
     this.segmentShift = 32 - segmentShift;
-    // Create segment mask for hash value mapping
-    // 创建段掩码用于哈希值映射
     segmentMask = segmentCount - 1;
 
-    // Create the segments array with calculated count
-    // 使用计算出的段数量创建段数组
+    // 6. 创建分段数组
     this.segments = newSegmentArray(segmentCount);
 
-    // Calculate the initial capacity for each segment
-    // 计算每个段的初始容量
+    // 7. 计算每个分段的容量
     int segmentCapacity = initialCapacity / segmentCount;
-    // Round up if there's a remainder
-    // 如果有余数，向上取整
     if (segmentCapacity * segmentCount < initialCapacity) {
       ++segmentCapacity;
     }
 
-    // Find the nearest power of 2 for segment size
-    // 找到大于等于 segmentCapacity 的最小2的幂
+    // 8. 计算分段大小(向上取整到2的幂)
     int segmentSize = 1;
     while (segmentSize < segmentCapacity) {
       segmentSize <<= 1;
     }
 
+    // 9. 初始化所有分段
     if (evictsBySize()) {
-      // If using weight-based eviction, distribute max weight among segments
-      // 如果使用基于权重的淘汰策略，在各个段之间分配最大权重
+      // 如果基于大小驱逐,计算每个分段的最大权重
       long maxSegmentWeight = maxWeight / segmentCount + 1;
       long remainder = maxWeight % segmentCount;
 
       for (int i = 0; i < this.segments.length; ++i) {
-        // Adjust weight distribution to ensure total equals maxWeight
-        // 调整权重分配以确保总和等于maxWeight
         if (i == remainder) {
           maxSegmentWeight--;
         }
@@ -435,12 +427,11 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
             builder.getStatsCounterSupplier().get());
       }
     } else {
-      // If not using weight-based eviction, create segments with no weight limit
-      // 如果不使用基于权重的淘汰策略，创建没有权重限制的段
+      // 如果不基于大小驱逐,创建无权重限制的分段
       for (int i = 0; i < this.segments.length; ++i) {
         this.segments[i] = createSegment(
             segmentSize,
-            UNSET_INT, // No weight limit 无权重限制
+            UNSET_INT,
             builder.getStatsCounterSupplier().get());
       }
     }
@@ -1849,52 +1840,131 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     }
   }
 
-  /** References a strong value. */
+  /**
+   * 一个专门为缓存设计的强引用值包装器。相比传统的JDK Reference，它提供了以下增强功能：
+   * 1. 缓存状态感知 - 通过isActive()和isLoading()反映值的缓存状态
+   * 2. 权重支持 - 通过getWeight()支持基于权重的缓存驱逐
+   * 3. 异步加载支持 - 通过waitForValue()支持异步加载场景
+   * 4. 条目关联 - 通过getEntry()支持与缓存条目的关联
+   * 5. 值更新通知 - 通过notifyNewValue()支持值更新的通知机制
+   *
+   * @param <K> 缓存键的类型
+   * @param <V> 缓存值的类型
+   */
   static class StrongValueReference<K, V> implements ValueReference<K, V> {
+    
+    /** 
+     * 被引用的值对象。使用final修饰确保引用不可变，
+     * 这与传统Reference不同，后者允许引用被GC回收。
+     */
     final V referent;
 
+    /**
+     * 创建一个新的强引用值包装器
+     *
+     * @param referent 要被引用的值对象，不能为null
+     */
     StrongValueReference(V referent) {
-      this.referent = referent;
+        this.referent = referent;
     }
 
+    /**
+     * 获取被引用的值。
+     * 不同于JDK Reference，该方法保证总是返回原始值，不会返回null。
+     *
+     * @return 被引用的值对象
+     */
     @Override
     public V get() {
-      return referent;
+        return referent;
     }
 
+    /**
+     * 获取该值在缓存中的权重。
+     * 对于简单的强引用值，总是返回1。
+     * 这个功能在JDK Reference中不存在。
+     *
+     * @return 该值的权重，默认为1
+     */
     @Override
     public int getWeight() {
-      return 1;
+        return 1;
     }
 
+    /**
+     * 获取包含该值的缓存条目。
+     * 强引用值不需要关联到具体条目，因此返回null。
+     * 这是对JDK Reference的扩展，支持与缓存结构的集成。
+     *
+     * @return null，表示没有关联的缓存条目
+     */
     @Override
     public ReferenceEntry<K, V> getEntry() {
-      return null;
+        return null;
     }
 
+    /**
+     * 创建此引用的副本。
+     * 由于强引用是不可变的，直接返回this。
+     * 这个方法支持缓存的写时复制语义。
+     *
+     * @param queue 引用队列（强引用不使用）
+     * @param value 新的值
+     * @param entry 关联的缓存条目
+     * @return this，因为强引用不需要复制
+     */
     @Override
     public ValueReference<K, V> copyFor(
         ReferenceQueue<V> queue, V value, ReferenceEntry<K, V> entry) {
-      return this;
+        return this;
     }
 
+    /**
+     * 检查该值是否正在加载中。
+     * 强引用值总是已加载完成的状态。
+     * 这是对JDK Reference的扩展，支持异步加载场景。
+     *
+     * @return false，表示值已经加载完成
+     */
     @Override
     public boolean isLoading() {
-      return false;
+        return false;
     }
 
+    /**
+     * 检查该引用是否处于活动状态。
+     * 强引用值总是活动的。
+     * 这是对JDK Reference的扩展，支持缓存生命周期管理。
+     *
+     * @return true，表示引用始终有效
+     */
     @Override
     public boolean isActive() {
-      return true;
+        return true;
     }
 
+    /**
+     * 等待并获取值。
+     * 对于强引用值，立即返回，不需要等待。
+     * 这是对JDK Reference的扩展，支持异步加载场景。
+     *
+     * @return 被引用的值对象
+     */
     @Override
     public V waitForValue() {
-      return get();
+        return get();
     }
 
+    /**
+     * 通知值已被更新。
+     * 强引用值不需要处理更新通知。
+     * 这是对JDK Reference的扩展，支持缓存一致性维护。
+     *
+     * @param newValue 新的值对象
+     */
     @Override
     public void notifyNewValue(V newValue) {
+        // 强引用不需要处理更新通知
     }
   }
 
