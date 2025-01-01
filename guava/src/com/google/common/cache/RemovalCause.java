@@ -20,7 +20,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * The reason why a cached entry was removed.
+ * 表示缓存条目被移除的原因。
+ * 缓存条目可能因为多种原因被移除，包括：手动移除、被替换、垃圾回收、过期和容量限制。
  *
  * @author Charles Fry
  * @since 10.0
@@ -28,9 +29,14 @@ import java.util.concurrent.ConcurrentMap;
 @GwtCompatible
 public enum RemovalCause {
   /**
-   * The entry was manually removed by the user. This can result from the user invoking {@link
-   * Cache#invalidate}, {@link Cache#invalidateAll(Iterable)}, {@link Cache#invalidateAll()}, {@link
-   * Map#remove}, {@link ConcurrentMap#remove}, or {@link Iterator#remove}.
+   * 表示条目被用户手动移除。
+   * 这种情况可能由以下操作触发：
+   * - {@link Cache#invalidate} 单个失效
+   * - {@link Cache#invalidateAll(Iterable)} 批量失效
+   * - {@link Cache#invalidateAll()} 全部失效
+   * - {@link Map#remove} Map接口的移除
+   * - {@link ConcurrentMap#remove} 并发Map的移除
+   * - {@link Iterator#remove} 迭代器的移除
    */
   EXPLICIT {
     @Override
@@ -40,10 +46,15 @@ public enum RemovalCause {
   },
 
   /**
-   * The entry itself was not actually removed, but its value was replaced by the user. This can
-   * result from the user invoking {@link Cache#put}, {@link LoadingCache#refresh}, {@link Map#put},
-   * {@link Map#putAll}, {@link ConcurrentMap#replace(Object, Object)}, or {@link
-   * ConcurrentMap#replace(Object, Object, Object)}.
+   * 表示条目的值被用户替换。
+   * 注意：此时条目本身并未被移除，只是值被更新。
+   * 这种情况可能由以下操作触发：
+   * - {@link Cache#put} 放入新值
+   * - {@link LoadingCache#refresh} 刷新值
+   * - {@link Map#put} Map接口的放入
+   * - {@link Map#putAll} Map接口的批量放入
+   * - {@link ConcurrentMap#replace(Object, Object)} 并发Map的替换
+   * - {@link ConcurrentMap#replace(Object, Object, Object)} 并发Map的条件替换
    */
   REPLACED {
     @Override
@@ -53,9 +64,11 @@ public enum RemovalCause {
   },
 
   /**
-   * The entry was removed automatically because its key or value was garbage-collected. This can
-   * occur when using {@link CacheBuilder#weakKeys}, {@link CacheBuilder#weakValues}, or {@link
-   * CacheBuilder#softValues}.
+   * 表示条目因其键或值被垃圾回收而被移除。
+   * 这种情况发生在使用以下特性时：
+   * - {@link CacheBuilder#weakKeys} 弱引用键
+   * - {@link CacheBuilder#weakValues} 弱引用值
+   * - {@link CacheBuilder#softValues} 软引用值
    */
   COLLECTED {
     @Override
@@ -65,8 +78,10 @@ public enum RemovalCause {
   },
 
   /**
-   * The entry's expiration timestamp has passed. This can occur when using {@link
-   * CacheBuilder#expireAfterWrite} or {@link CacheBuilder#expireAfterAccess}.
+   * 表示条目因为超过过期时间而被移除。
+   * 这种情况发生在使用以下特性时：
+   * - {@link CacheBuilder#expireAfterWrite} 写入后过期
+   * - {@link CacheBuilder#expireAfterAccess} 访问后过期
    */
   EXPIRED {
     @Override
@@ -76,8 +91,10 @@ public enum RemovalCause {
   },
 
   /**
-   * The entry was evicted due to size constraints. This can occur when using {@link
-   * CacheBuilder#maximumSize} or {@link CacheBuilder#maximumWeight}.
+   * 表示条目因为缓存大小限制而被驱逐。
+   * 这种情况发生在使用以下特性时：
+   * - {@link CacheBuilder#maximumSize} 最大条目数限制
+   * - {@link CacheBuilder#maximumWeight} 最大权重限制
    */
   SIZE {
     @Override
@@ -87,8 +104,18 @@ public enum RemovalCause {
   };
 
   /**
-   * Returns {@code true} if there was an automatic removal due to eviction (the cause is neither
-   * {@link #EXPLICIT} nor {@link #REPLACED}).
+   * 判断是否为自动驱逐导致的移除。
+   * 
+   * 返回true的情况：
+   * - COLLECTED (垃圾回收)
+   * - EXPIRED (过期)
+   * - SIZE (大小限制)
+   * 
+   * 返回false的情况：
+   * - EXPLICIT (手动移除)
+   * - REPLACED (值替换)
+   *
+   * @return 如果是自动驱逐（非手动移除也非替换）返回true
    */
   abstract boolean wasEvicted();
 }

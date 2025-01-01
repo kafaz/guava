@@ -39,6 +39,38 @@ import java.util.concurrent.atomic.AtomicLong;
  * @since 1.8
  * @author Doug Lea
  */
+/**
+ * 一个高效的累加器实现，用于维护一个初始值为零的 long 类型的总和。
+ * 当多线程并发更新时，内部会动态地扩展变量集合以减少竞争。
+ * 
+ * 主要特点：
+ * 1. 分散竞争：当多线程更新发生冲突时，会动态创建新的 Cell 来分散竞争
+ * 2. 高吞吐量：在高并发场景下，性能显著优于 AtomicLong
+ * 3. 非精确统计：sum() 方法返回的是非原子性的快照值
+ * 
+ * 适用场景：
+ * - 适合用于统计数据收集等对精确性要求不高的场景
+ * - 不适合用于细粒度的同步控制
+ * - 在低竞争情况下，性能与 AtomicLong 相似
+ * - 在高竞争情况下，以额外的空间换取更高的吞吐量
+ *
+ * 注意事项：
+ * - 继承自 Number 类，但不实现 equals、hashCode 和 compareTo 方法
+ * - 因为实例值会被修改，所以不适合作为集合的键
+ * - 此类计划被放置在 java.util.concurrent.atomic 包中
+ *
+ * 示例用法：
+ * <pre>{@code
+ * LongAdder adder = new LongAdder();
+ * adder.add(10);      // 添加值
+ * adder.increment();  // 加1
+ * adder.decrement();  // 减1
+ * long sum = adder.sum();  // 获取总和
+ * }</pre>
+ *
+ * @since 1.8
+ * @author Doug Lea
+ */
 @GwtCompatible(emulated = true)
 final class LongAdder extends Striped64 implements Serializable, LongAddable {
   private static final long serialVersionUID = 7249069246863182397L;
@@ -53,24 +85,44 @@ final class LongAdder extends Striped64 implements Serializable, LongAddable {
   public LongAdder() {}
 
   /**
-   * Adds the given value.
+   * 将指定值添加到累加器。这是一个高度优化的方法，用于处理高并发场景下的累加操作。
+   * 
+   * 实现策略：
+   * 1. 优先尝试更新base值，这是最快的路径
+   * 2. 如果base更新失败，说明存在竞争，则尝试更新Cell数组中的某个单元
+   * 3. 如果Cell更新也失败，则进入完整的重试逻辑
+   * 
+   * 性能考虑：
+   * - 采用无锁设计，全程使用CAS操作
+   * - 通过Cell数组分散竞争
+   * - 使用线程哈希值来选择Cell，减少冲突
    *
-   * @param x the value to add
+   * @param x 要添加的值
    */
   @Override
   public void add(long x) {
-    Cell[] as;
-    long b, v;
-    int[] hc;
-    Cell a;
-    int n;
+    Cell[] as;      // cells数组的引用
+    long b, v;      // b用于base值，v用于Cell的当前值
+    int[] hc;       // 线程的哈希码数组
+    Cell a;         // 当前选中的Cell
+    int n;          // cells数组的长度
+
+    // 快速路径：尝试直接更新base值
+    // 如果cells已初始化或CAS更新base失败，则进入慢速路径
     if ((as = cells) != null || !casBase(b = base, b + x)) {
-      boolean uncontended = true;
-      if ((hc = threadHashCode.get()) == null
-          || as == null
-          || (n = as.length) < 1
-          || (a = as[(n - 1) & hc[0]]) == null
-          || !(uncontended = a.cas(v = a.value, v + x))) retryUpdate(x, hc, uncontended);
+        // 标记是否存在竞争，初始假设无竞争
+        boolean uncontended = true;
+        
+        // 以下任一条件成立则需要进入重试逻辑：
+        if ((hc = threadHashCode.get()) == null     // 1. 线程哈希码未初始化
+            || as == null                           // 2. cells数组未初始化
+            || (n = as.length) < 1                  // 3. cells数组为空
+            || (a = as[(n - 1) & hc[0]]) == null   // 4. 目标Cell未初始化
+            || !(uncontended =                      // 5. CAS更新Cell失败
+                a.cas(v = a.value, v + x))) {
+            // 进入完整的重试逻辑，可能会初始化或扩容cells数组
+            retryUpdate(x, hc, uncontended);
+        }
     }
   }
 

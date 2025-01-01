@@ -607,7 +607,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
      */
     STRONG {
       @Override
-      <K, V> ReferenceEntry<K, V> newEtry(
+      <K, V> ReferenceEntry<K, V> newEntry(
           Segment<K, V> segment, K key, int hash, @CheckForNull ReferenceEntry<K, V> next) {
         return new StrongEntry<>(key, hash, next);
       }
@@ -3075,7 +3075,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
         entry.setWriteTime(now);
       }
       accessQueue.add(entry);
-      writeQueue.add(entry);
+      writeQueue.add(entry);  
     }
 
     /**
@@ -3115,16 +3115,41 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
     }
 
+    /**
+     * 清理缓存中的过期条目。
+     * 该方法会按照以下顺序执行清理：
+     * 1. 处理最近访问队列(recency queue)
+     * 2. 清理写入队列(write queue)中的过期条目
+     * 3. 清理访问队列(access queue)中的过期条目
+     * 
+     * 该方法必须在持有段锁的情况下调用，以确保线程安全。
+     * 
+     * 清理过程：
+     * - 首先处理最近访问队列，更新访问顺序
+     * - 然后检查写入队列的头部条目，移除所有过期的条目
+     * - 最后检查访问队列的头部条目，移除所有过期的条目
+     * 
+     * 如果移除条目失败，将抛出AssertionError，因为这表示缓存的内部状态不一致。
+     *
+     * @param now 当前时间戳（纳秒），用于判断条目是否过期
+     * @throws AssertionError 如果条目移除失败
+     */
     @GuardedBy("this")
     void expireEntries(long now) {
+      // 处理最近访问队列，确保访问顺序的正确性
       drainRecencyQueue();
 
       ReferenceEntry<K, V> e;
+      // 清理写入队列中的过期条目
+      // 从队列头部开始检查，直到遇到未过期的条目
       while ((e = writeQueue.peek()) != null && map.isExpired(e, now)) {
         if (!removeEntry(e, e.getHash(), RemovalCause.EXPIRED)) {
           throw new AssertionError();
         }
       }
+      
+      // 清理访问队列中的过期条目
+      // 从队列头部开始检查，直到遇到未过期的条目
       while ((e = accessQueue.peek()) != null && map.isExpired(e, now)) {
         if (!removeEntry(e, e.getHash(), RemovalCause.EXPIRED)) {
           throw new AssertionError();
@@ -3148,35 +3173,53 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     }
 
     /**
-     * Performs eviction if the segment is over capacity. Avoids flushing the entire
-     * cache if the
-     * newest entry exceeds the maximum weight all on its own.
-     *
-     * @param newest the most recently added entry
+     * 执行缓存条目的淘汰操作，当段的容量超过限制时触发。
+     * 该方法采用智能淘汰策略，避免在新条目超重时对整个缓存进行刷新。
+     * 
+     * 淘汰过程：
+     * 1. 首先检查是否启用了基于大小的淘汰策略
+     * 2. 处理最近访问队列，确保访问顺序正确
+     * 3. 检查新添加条目的权重是否超过段的最大容量
+     *    - 如果是，直接移除该条目，不再处理其他条目
+     * 4. 如果总权重仍然超过限制，继续淘汰其他条目
+     *    - 按照淘汰策略选择需要移除的条目
+     *    - 持续移除直到总权重低于限制
+     * 
+     * 注意事项：
+     * - 该方法必须在持有段锁的情况下调用
+     * - 移除条目失败会抛出AssertionError
+     * - 优先处理超重的新条目，避免连锁淘汰
+     * 
+     * @param newest 最近添加的缓存条目，需要优先检查其权重
+     * @throws AssertionError 如果条目移除失败，表示缓存内部状态不一致
      */
     @GuardedBy("this")
     void evictEntries(ReferenceEntry<K, V> newest) {
-      if (!map.evictsBySize()) {
-        return;
-      }
-
-      drainRecencyQueue();
-
-      // If the newest entry by itself is too heavy for the segment, don't bother
-      // evicting
-      // anything else, just that
-      if (newest.getValueReference().getWeight() > maxSegmentWeight) {
-        if (!removeEntry(newest, newest.getHash(), RemovalCause.SIZE)) {
-          throw new AssertionError();
+        // 检查是否启用了基于大小的淘汰策略
+        if (!map.evictsBySize()) {
+            return;
         }
-      }
 
-      while (totalWeight > maxSegmentWeight) {
-        ReferenceEntry<K, V> e = getNextEvictable();
-        if (!removeEntry(e, e.getHash(), RemovalCause.SIZE)) {
-          throw new AssertionError();
+        // 处理最近访问队列，确保访问顺序正确
+        drainRecencyQueue();
+
+        // 如果新条目本身的权重就超过段的最大容量
+        // 直接移除该条目，不需要淘汰其他条目
+        if (newest.getValueReference().getWeight() > maxSegmentWeight) {
+            if (!removeEntry(newest, newest.getHash(), RemovalCause.SIZE)) {
+                throw new AssertionError();
+            }
         }
-      }
+
+        // 持续淘汰条目直到总权重低于限制
+        while (totalWeight > maxSegmentWeight) {
+            // 获取下一个可淘汰的条目
+            ReferenceEntry<K, V> e = getNextEvictable();
+            // 移除该条目，如果移除失败则抛出异常
+            if (!removeEntry(e, e.getHash(), RemovalCause.SIZE)) {
+                throw new AssertionError();
+            }
+        }
     }
 
     // TODO(fry): instead implement this with an eviction head
@@ -3304,80 +3347,97 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       }
     }
 
+    /**
+     * 将键值对放入缓存段中。
+     * 
+     * @param key 要存储的键
+     * @param hash 键的哈希值
+     * @param value 要存储的值
+     * @param onlyIfAbsent 如果为true，则只在键不存在时才插入
+     * @return 如果键已存在，返回原值；否则返回null
+     */
     @CanIgnoreReturnValue
     @CheckForNull
     V put(K key, int hash, V value, boolean onlyIfAbsent) {
-      lock();
-      try {
-        long now = map.ticker.read();
-        preWriteCleanup(now);
+        // 获取段锁，确保线程安全
+        lock();
+        try {
+            // 获取当前时间
+            long now = map.ticker.read();
+            // 执行写入前的清理工作（如处理过期条目） 懒清理的策略
+            preWriteCleanup(now);
 
-        int newCount = this.count + 1;
-        if (newCount > this.threshold) { // ensure capacity
-          expand();
-          newCount = this.count + 1;
-        }
-
-        AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-        int index = hash & (table.length() - 1);
-        ReferenceEntry<K, V> first = table.get(index);
-
-        // Look for an existing entry.
-        for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
-          K entryKey = e.getKey();
-          if (e.getHash() == hash
-              && entryKey != null
-              && map.keyEquivalence.equivalent(key, entryKey)) {
-            // We found an existing entry.
-
-            ValueReference<K, V> valueReference = e.getValueReference();
-            V entryValue = valueReference.get();
-
-            if (entryValue == null) {
-              ++modCount;
-              if (valueReference.isActive()) {
-                enqueueNotification(
-                    key, hash, entryValue, valueReference.getWeight(), RemovalCause.COLLECTED);
-                setValue(e, key, value, now);
-                newCount = this.count; // count remains unchanged
-              } else {
-                setValue(e, key, value, now);
+            // 计算新的条目数
+            int newCount = this.count + 1;
+            // 如果超过阈值，进行扩容
+            if (newCount > this.threshold) {
+                expand();
                 newCount = this.count + 1;
-              }
-              this.count = newCount; // write-volatile
-              evictEntries(e);
-              return null;
-            } else if (onlyIfAbsent) {
-              // Mimic
-              // "if (!map.containsKey(key)) ...
-              // else return map.get(key);
-              recordLockedRead(e, now);
-              return entryValue;
-            } else {
-              // clobber existing entry, count remains unchanged
-              ++modCount;
-              enqueueNotification(
-                  key, hash, entryValue, valueReference.getWeight(), RemovalCause.REPLACED);
-              setValue(e, key, value, now);
-              evictEntries(e);
-              return entryValue;
             }
-          }
-        }
+            // 获取哈希表和目标桶的索引
+            AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+            int index = hash & (table.length() - 1);
+            ReferenceEntry<K, V> first = table.get(index);
 
-        // Create a new entry.
-        ++modCount;
-        ReferenceEntry<K, V> newEntry = newEntry(key, hash, first);
-        setValue(newEntry, key, value, now);
-        table.set(index, newEntry);
-        newCount = this.count + 1;
-        this.count = newCount; // write-volatile
-        evictEntries(newEntry);
-        return null;
-      } finally {
-        unlock();
-        postWriteCleanup();
-      }
+            // 遍历哈希链表查找已存在的条目
+            for (ReferenceEntry<K, V> e = first; e != null; e = e.getNext()) {
+                K entryKey = e.getKey();
+                // 如果找到匹配的键
+                if (e.getHash() == hash && entryKey != null 
+                    && map.keyEquivalence.equivalent(key, entryKey)) {
+                    
+                    ValueReference<K, V> valueReference = e.getValueReference();
+                    V entryValue = valueReference.get();
+
+                    // 处理值为null的情况（可能被GC回收）
+                    if (entryValue == null) {
+                        ++modCount;
+                        // 仍活跃但是需要被回收
+                        if (valueReference.isActive()) {
+                            // 通知值被回收
+                            enqueueNotification(key, hash, entryValue, 
+                                valueReference.getWeight(), RemovalCause.COLLECTED);
+                            setValue(e, key, value, now);
+                            newCount = this.count; // 计数保持不变
+                        } else {
+                            setValue(e, key, value, now);
+                            newCount = this.count + 1;
+                        }
+                        this.count = newCount;
+                        evictEntries(e);
+                        return null;
+                    }
+                    
+                    // 处理onlyIfAbsent的情况
+                    if (onlyIfAbsent) {
+                        recordLockedRead(e, now);
+                        return entryValue;
+                    }
+
+                    // 更新现有条目的值
+                    ++modCount;
+                    enqueueNotification(key, hash, entryValue,
+                        valueReference.getWeight(), RemovalCause.REPLACED);
+                    setValue(e, key, value, now);
+                    evictEntries(e);
+                    return entryValue;
+                }
+            }
+
+            // 创建新条目
+            ++modCount;
+            ReferenceEntry<K, V> newEntry = newEntry(key, hash, first);
+            setValue(newEntry, key, value, now);
+            table.set(index, newEntry);
+            newCount = this.count + 1;
+            this.count = newCount;
+            evictEntries(newEntry);
+            return null;
+        } finally {
+            // 释放锁并执行后续清理
+            unlock();
+            postWriteCleanup();
+        }
     }
 
     /** Expands the table if possible. */
@@ -4130,16 +4190,45 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       runUnlockedCleanup();
     }
 
+    /**
+     * 执行需要加锁的清理操作。
+     * 该方法主要处理三个任务：
+     * 1. 清理引用队列中的已失效引用
+     * 2. 清理过期的缓存条目
+     * 3. 重置读取计数器
+     *  涉及到两个清理函数:
+     * 1. @see LocalCache#segments{@link #drainReferenceQueues()} 和gc挂钩,负责清理被GC回收了的对象绑定的ReferenceEntry
+     * 2. @see LocalCache#segments{@link #expireEntries(long)} 和过期策略挂钩, 负责清理过期的{@link LocalCache.ReferenceEntry}
+     * 注意：该方法使用tryLock()尝试获取锁，如果获取失败则跳过清理。
+     * 这样设计是为了避免清理操作阻塞正常的缓存访问。
+     *
+     * @param now 当前时间戳（纳秒），用于判断条目是否过期
+     */
     void runLockedCleanup(long now) {
-      if (tryLock()) {
-        try {
-          drainReferenceQueues();
-          expireEntries(now); // calls drainRecencyQueue
-          readCount.set(0);
-        } finally {
-          unlock();
+        // 尝试获取段锁，如果其他线程持有锁则放弃清理
+        if (tryLock()) {
+            try {
+                // 清理引用队列，处理已被GC回收的弱引用/软引用
+                drainReferenceQueues();
+                
+                // 清理过期的缓存条目
+                // 该方法会同时处理：
+                // 1. 基于时间的过期
+                // 2. 基于访问顺序的过期
+                // 3. 基于写入顺序的过期
+                expireEntries(now);
+                
+                // 重置读取计数器
+                // 读取计数用于追踪段的访问频率，
+                // 当达到特定阈值时触发清理操作
+                readCount.set(0);
+            } finally {
+                // 确保在所有情况下都释放锁
+                unlock();
+            }
         }
-      }
+        // 如果获取锁失败，直接返回，
+        // 等待下一次清理机会
     }
 
     void runUnlockedCleanup() {
