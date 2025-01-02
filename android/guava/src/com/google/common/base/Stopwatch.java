@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * An object that accurately measures <i>elapsed time</i>: the measured duration between two
  * successive readings of "now" in the same process.
- *
+ * 
  * <p>In contrast, <i>wall time</i> is a reading of "now" as given by a method like
  * {@link System#currentTimeMillis()}, best represented as an {@link java.time.Instant}. Such values
  * <i>can</i> be subtracted to obtain a {@code Duration} (such as by {@code Duration.between}), but
