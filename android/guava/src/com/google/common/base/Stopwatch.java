@@ -24,75 +24,83 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+
 import com.google.common.annotations.GwtCompatible;
 import com.google.common.annotations.GwtIncompatible;
 import com.google.common.annotations.J2ktIncompatible;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.j2objc.annotations.J2ObjCIncompatible;
-import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 
 /**
- * An object that accurately measures <i>elapsed time</i>: the measured duration between two
+ * 一个精确测量<i>流逝时间</i>的对象：用于测量同一进程中两次连续"当前时间"读数之间的持续时间。
+ * An object that accurately measures <i>elapsed time</i>: the measured duration
+ * between two
  * successive readings of "now" in the same process.
  * 
- * <p>In contrast, <i>wall time</i> is a reading of "now" as given by a method like
- * {@link System#currentTimeMillis()}, best represented as an {@link java.time.Instant}. Such values
- * <i>can</i> be subtracted to obtain a {@code Duration} (such as by {@code Duration.between}), but
- * doing so does <i>not</i> give a reliable measurement of elapsed time, because wall time readings
- * are inherently approximate, routinely affected by periodic clock corrections. Because this class
- * (by default) uses {@link System#nanoTime}, it is unaffected by these changes.
+ * <p>
+ * 与之相对的，<i>墙上时间</i>是通过{@link System#currentTimeMillis()}这样的方法获得的"当前时间"读数，
+ * 最适合用{@link java.time.Instant}表示。这些值<i>可以</i>通过相减得到一个{@code Duration}
+ * （比如使用{@code Duration.between}），但这样做<i>不能</i>得到可靠的流逝时间测量，
+ * 因为墙上时间的读数本质上是近似的，会定期受到时钟校正的影响。
+ * 由于本类（默认）使用{@link System#nanoTime}，因此不受这些变化的影响。
  *
- * <p>Use this class instead of direct calls to {@link System#nanoTime} for two reasons:
- *
+ * <p>
+ * 使用此类而不是直接调用{@link System#nanoTime}有两个原因：
  * <ul>
- *   <li>The raw {@code long} values returned by {@code nanoTime} are meaningless and unsafe to use
- *       in any other way than how {@code Stopwatch} uses them.
- *   <li>An alternative source of nanosecond ticks can be substituted, for example for testing or
- *       performance reasons, without affecting most of your code.
+ * <li>{@code nanoTime}返回的原始{@code long}值没有实际意义，
+ * 除了在{@code Stopwatch}中的使用方式外，其他使用方式都是不安全的。
+ * <li>可以替换为其他纳秒级计时源，例如为了测试或性能原因，
+ * 而不会影响你的大部分代码。
  * </ul>
  *
- * <p>The one downside of {@code Stopwatch} relative to {@link System#nanoTime()} is that {@code
- * Stopwatch} requires object allocation and additional method calls, which can reduce the accuracy
- * of the elapsed times reported. {@code Stopwatch} is still suitable for logging and metrics where
- * reasonably accurate values are sufficient. If the uncommon case that you need to maximize
- * accuracy, use {@code System.nanoTime()} directly instead.
+ * <p>
+ * {@code Stopwatch}相对于{@link System#nanoTime()}的一个缺点是，
+ * {@code Stopwatch}需要进行对象分配和额外的方法调用，这可能会降低报告的流逝时间的准确性。
+ * 对于只需要合理准确值的日志记录和指标统计来说，{@code Stopwatch}仍然是合适的。
+ * 在极少数需要最大化准确性的情况下，请直接使用{@code System.nanoTime()}。
  *
- * <p>Basic usage:
- *
+ * <p>
+ * 基本用法：
+ * 
  * <pre>{@code
- * Stopwatch stopwatch = Stopwatch.createStarted();
- * doSomething();
- * stopwatch.stop(); // optional
+ * Stopwatch stopwatch = Stopwatch.createStarted(); // 创建并启动秒表
+ * doSomething(); // 执行某些操作
+ * stopwatch.stop(); // 停止秒表（可选）
  *
- * Duration duration = stopwatch.elapsed();
+ * Duration duration = stopwatch.elapsed(); // 获取流逝的时间
  *
- * log.info("time: " + stopwatch); // formatted string like "12.3 ms"
+ * log.info("time: " + stopwatch); // 输出格式化字符串，如 "12.3 ms"
  * }</pre>
  *
- * <p>The state-changing methods are not idempotent; it is an error to start or stop a stopwatch
- * that is already in the desired state.
+ * <p>
+ * 改变状态的方法不是幂等的；对已经处于目标状态的秒表进行启动或停止是错误的。
  *
- * <p>When testing code that uses this class, use {@link #createUnstarted(Ticker)} or {@link
- * #createStarted(Ticker)} to supply a fake or mock ticker. This allows you to simulate any valid
- * behavior of the stopwatch.
+ * <p>
+ * 在测试使用此类的代码时，使用{@link #createUnstarted(Ticker)}或
+ * {@link #createStarted(Ticker)}来提供一个模拟的计时器。
+ * 这样可以模拟秒表的任何有效行为。
  *
- * <p><b>Note:</b> This class is not thread-safe.
+ * <p>
+ * <b>注意：</b>此类不是线程安全的。
  *
- * <p><b>Warning for Android users:</b> a stopwatch with default behavior may not continue to keep
- * time while the device is asleep. Instead, create one like this:
+ * <p>
+ * <b>Android用户警告：</b>使用默认行为的秒表在设备休眠时可能不会继续计时。
+ * 建议使用以下方式创建：
  *
  * <pre>{@code
  * Stopwatch.createStarted(
- *      new Ticker() {
- *        public long read() {
- *          return android.os.SystemClock.elapsedRealtimeNanos(); // requires API Level 17
- *        }
- *      });
+ *     new Ticker() {
+ *       public long read() {
+ *         // 使用Android特定的计时方法（需要API Level 17）
+ *         return android.os.SystemClock.elapsedRealtimeNanos();
+ *       }
+ *     });
  * }</pre>
  *
  * @author Kevin Bourrillion
- * @since 10.0
+ * @since 10.0 版本引入
  */
 @GwtCompatible(emulated = true)
 @SuppressWarnings("GoodTime") // lots of violations
@@ -103,7 +111,8 @@ public final class Stopwatch {
   private long startTick;
 
   /**
-   * Creates (but does not start) a new stopwatch using {@link System#nanoTime} as its time source.
+   * Creates (but does not start) a new stopwatch using {@link System#nanoTime} as
+   * its time source.
    *
    * @since 15.0
    */
@@ -112,7 +121,8 @@ public final class Stopwatch {
   }
 
   /**
-   * Creates (but does not start) a new stopwatch, using the specified time source.
+   * Creates (but does not start) a new stopwatch, using the specified time
+   * source.
    *
    * @since 15.0
    */
@@ -121,7 +131,8 @@ public final class Stopwatch {
   }
 
   /**
-   * Creates (and starts) a new stopwatch using {@link System#nanoTime} as its time source.
+   * Creates (and starts) a new stopwatch using {@link System#nanoTime} as its
+   * time source.
    *
    * @since 15.0
    */
@@ -147,7 +158,8 @@ public final class Stopwatch {
   }
 
   /**
-   * Returns {@code true} if {@link #start()} has been called on this stopwatch, and {@link #stop()}
+   * Returns {@code true} if {@link #start()} has been called on this stopwatch,
+   * and {@link #stop()}
    * has not been called since the last call to {@code start()}.
    */
   public boolean isRunning() {
@@ -169,7 +181,8 @@ public final class Stopwatch {
   }
 
   /**
-   * Stops the stopwatch. Future reads will return the fixed duration that had elapsed up to this
+   * Stops the stopwatch. Future reads will return the fixed duration that had
+   * elapsed up to this
    * point.
    *
    * @return this {@code Stopwatch} instance
@@ -185,7 +198,8 @@ public final class Stopwatch {
   }
 
   /**
-   * Sets the elapsed time for this stopwatch to zero, and places it in a stopped state.
+   * Sets the elapsed time for this stopwatch to zero, and places it in a stopped
+   * state.
    *
    * @return this {@code Stopwatch} instance
    */
@@ -201,14 +215,20 @@ public final class Stopwatch {
   }
 
   /**
-   * Returns the current elapsed time shown on this stopwatch, expressed in the desired time unit,
+   * Returns the current elapsed time shown on this stopwatch, expressed in the
+   * desired time unit,
    * with any fraction rounded down.
    *
-   * <p><b>Note:</b> the overhead of measurement can be more than a microsecond, so it is generally
+   * <p>
+   * <b>Note:</b> the overhead of measurement can be more than a microsecond, so
+   * it is generally
    * not useful to specify {@link TimeUnit#NANOSECONDS} precision here.
    *
-   * <p>It is generally not a good idea to use an ambiguous, unitless {@code long} to represent
-   * elapsed time. Therefore, we recommend using {@link #elapsed()} instead, which returns a
+   * <p>
+   * It is generally not a good idea to use an ambiguous, unitless {@code long} to
+   * represent
+   * elapsed time. Therefore, we recommend using {@link #elapsed()} instead, which
+   * returns a
    * strongly-typed {@code Duration} instance.
    *
    * @since 14.0 (since 10.0 as {@code elapsedTime()})
@@ -218,18 +238,24 @@ public final class Stopwatch {
   }
 
   /**
-   * Returns the current elapsed time shown on this stopwatch as a {@link Duration}. Unlike {@link
+   * Returns the current elapsed time shown on this stopwatch as a
+   * {@link Duration}. Unlike {@link
    * #elapsed(TimeUnit)}, this method does not lose any precision due to rounding.
    *
-   * <p><b>Warning:</b> do not call this method from Android code unless you are on Android API
+   * <p>
+   * <b>Warning:</b> do not call this method from Android code unless you are on
+   * Android API
    * level 26+ or you <a
-   * href="https://developer.android.com/studio/write/java11-default-support-table">opt in to
+   * href=
+   * "https://developer.android.com/studio/write/java11-default-support-table">opt
+   * in to
    * library desugaring</a>.
    *
    * @since 33.4.0 (but since 22.0 in the JRE flavor)
    */
   @SuppressWarnings("Java7ApiChecker")
-  // If users use this when they shouldn't, we hope that NewApi will catch subsequent Duration calls
+  // If users use this when they shouldn't, we hope that NewApi will catch
+  // subsequent Duration calls
   @IgnoreJRERequirement
   @J2ktIncompatible
   @GwtIncompatible
