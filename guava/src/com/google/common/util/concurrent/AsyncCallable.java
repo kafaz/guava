@@ -19,23 +19,41 @@ import java.util.concurrent.Future;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
- * Computes a value, possibly asynchronously. For an example usage and more information, see {@link
- * Futures.FutureCombiner#callAsync(AsyncCallable, java.util.concurrent.Executor)}.
+ * 一个可能异步计算值的接口。类似于 Callable，但返回 ListenableFuture 结果。
+ * 
+ * 主要特点：
+ * 1. 支持异步计算
+ * 2. 返回 ListenableFuture 类型
+ * 3. 可用于异步派生操作
+ * 
+ * 使用场景：
+ * - 异步任务链式调用
+ * - 复杂的异步计算
+ * - 需要监听结果的异步操作
+ * 
+ * 示例用法参见：{@link Futures.FutureCombiner#callAsync(AsyncCallable, java.util.concurrent.Executor)}
  *
- * <p>Much like {@link java.util.concurrent.Callable}, but returning a {@link ListenableFuture}
- * result.
- *
+ * @param <V> 计算结果的类型，允许为 null
  * @since 20.0
  */
 @FunctionalInterface
 @GwtCompatible
 public interface AsyncCallable<V extends @Nullable Object> {
   /**
-   * Computes a result {@code Future}. The output {@code Future} need not be {@linkplain
-   * Future#isDone done}, making {@code AsyncCallable} suitable for asynchronous derivations.
-   *
-   * <p>Throwing an exception from this method is equivalent to returning a failing {@link
-   * ListenableFuture}.
+   * 执行异步计算并返回一个 Future 结果。
+   * 
+   * 重要特性：
+   * 1. 返回的 Future 无需立即完成（isDone 可能为 false）
+   * 2. 适用于异步派生场景
+   * 3. 抛出异常等价于返回失败的 Future
+   * 
+   * 实现注意事项：
+   * - 可以返回尚未完成的 Future
+   * - 异常处理：方法可以抛出异常，会被转换为失败的 Future
+   * - 建议实现异步操作以提高性能
+   * 
+   * @return 包含计算结果的 ListenableFuture
+   * @throws Exception 如果计算过程中发生错误
    */
   ListenableFuture<V> call() throws Exception;
 }
