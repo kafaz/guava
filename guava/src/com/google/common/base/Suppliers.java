@@ -303,7 +303,7 @@ public final class Suppliers {
     @SuppressWarnings("SynchronizeOnNonFinalField")
     public T get() {
       // Another variant of Double Checked Locking.
-      //
+      // ? 是否有更优雅的方式判断是否超时?
       // We use two volatile reads. We could reduce this to one by
       // putting our fields into a holder class, but (at least on x86)
       // the extra memory consumption and indirection are more

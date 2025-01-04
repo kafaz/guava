@@ -22,47 +22,60 @@ import javax.annotation.CheckForNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
- * Static convenience methods that serve the same purpose as Java language <a
- * href="https://docs.oracle.com/javase/8/docs/technotes/guides/language/assert.html">assertions</a>,
- * except that they are always enabled. These methods should be used instead of Java assertions
- * whenever there is a chance the check may fail "in real life". Example:
+ * 提供与 Java 语言断言类似功能的静态便利方法，但这些方法始终处于启用状态。当检查可能在"实际环境"中失败时，
+ * 应使用这些方法来替代 Java 断言。
+ * Static convenience methods that serve the same purpose as Java language assertions, except that 
+ * they are always enabled. These methods should be used instead of Java assertions whenever there 
+ * is a chance the check may fail "in real life".
  *
+ * 示例 Example:
  * <pre>{@code
  * Bill bill = remoteService.getLastUnpaidBill();
  *
+ * // 如果 bug 12345 再次发生，我们宁愿直接终止程序
  * // In case bug 12345 happens again we'd rather just die
  * Verify.verify(bill.status() == Status.UNPAID,
  *     "Unexpected bill status: %s", bill.status());
  * }</pre>
  *
- * <h3>Comparison to alternatives</h3>
+ * <h3>与其他方案的比较 Comparison to alternatives</h3>
  *
- * <p><b>Note:</b> In some cases the differences explained below can be subtle. When it's unclear
- * which approach to use, <b>don't worry</b> too much about it; just pick something that seems
- * reasonable and it will be fine.
+ * 注意：在某些情况下，下面解释的差异可能很微妙。当不确定使用哪种方法时，不用太担心，
+ * 选择一个看起来合理的方案就可以。
+ * Note: In some cases the differences explained below can be subtle. When it's unclear which 
+ * approach to use, don't worry too much about it; just pick something that seems reasonable 
+ * and it will be fine.
  *
  * <ul>
- *   <li>If checking whether the <i>caller</i> has violated your method or constructor's contract
- *       (such as by passing an invalid argument), use the utilities of the {@link Preconditions}
- *       class instead.
- *   <li>If checking an <i>impossible</i> condition (which <i>cannot</i> happen unless your own
- *       class or its <i>trusted</i> dependencies is badly broken), this is what ordinary Java
- *       assertions are for. Note that assertions are not enabled by default; they are essentially
- *       considered "compiled comments."
- *   <li>An explicit {@code if/throw} (as illustrated below) is always acceptable; we still
- *       recommend using our {@link VerifyException} exception type. Throwing a plain {@link
- *       RuntimeException} is frowned upon.
- *   <li>Use of {@link java.util.Objects#requireNonNull(Object)} is generally discouraged, since
- *       {@link #verifyNotNull(Object)} and {@link Preconditions#checkNotNull(Object)} perform the
- *       same function with more clarity.
+ *   <li>如果要检查调用者是否违反了你的方法或构造函数的约定（例如传入无效参数），
+ *       应使用 Preconditions 类的工具方法。
+ *       If checking whether the caller has violated your method or constructor's contract, 
+ *       use the utilities of the Preconditions class instead.
+ *
+ *   <li>如果检查不可能发生的情况（除非你自己的类或其受信任的依赖项严重损坏，否则不会发生），
+ *       这就是普通 Java 断言的用途。注意，断言默认是禁用的，本质上被视为"已编译的注释"。
+ *       If checking an impossible condition, this is what ordinary Java assertions are for. 
+ *       Note that assertions are not enabled by default.
+ *
+ *   <li>显式的 if/throw 始终是可接受的；我们仍建议使用 VerifyException 异常类型。
+ *       不建议抛出普通的 RuntimeException。
+ *       An explicit if/throw is always acceptable; we recommend using VerifyException. 
+ *       Throwing plain RuntimeException is frowned upon.
+ *
+ *   <li>通常不建议使用 Objects.requireNonNull()，因为 verifyNotNull() 和 
+ *       Preconditions.checkNotNull() 可以更清晰地执行相同的功能。
+ *       Use of Objects.requireNonNull() is generally discouraged, since verifyNotNull() 
+ *       and Preconditions.checkNotNull() perform the same function with more clarity.
  * </ul>
  *
- * <h3>Warning about performance</h3>
+ * <h3>性能警告 Warning about performance</h3>
  *
- * <p>Remember that parameter values for message construction must all be computed eagerly, and
- * autoboxing and varargs array creation may happen as well, even when the verification succeeds and
- * the message ends up unneeded. Performance-sensitive verification checks should continue to use
- * usual form:
+ * 请记住，消息构造的参数值都必须立即计算，即使验证成功且消息最终未使用，也可能发生自动装箱和
+ * 可变参数数组创建。对性能敏感的验证检查应继续使用常规形式：
+ * Remember that parameter values for message construction must all be computed eagerly, and
+ * autoboxing and varargs array creation may happen as well, even when the verification succeeds
+ * and the message ends up unneeded. Performance-sensitive verification checks should continue
+ * to use usual form:
  *
  * <pre>{@code
  * Bill bill = remoteService.getLastUnpaidBill();
@@ -71,19 +84,13 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * }
  * }</pre>
  *
- * <h3>Only {@code %s} is supported</h3>
+ * <h3>仅支持 %s Only %s is supported</h3>
  *
- * <p>As with {@link Preconditions}, {@code Verify} uses {@link Strings#lenientFormat} to format
- * error message template strings. This only supports the {@code "%s"} specifier, not the full range
- * of {@link java.util.Formatter} specifiers. However, note that if the number of arguments does not
- * match the number of occurrences of {@code "%s"} in the format string, {@code Verify} will still
- * behave as expected, and will still include all argument values in the error message; the message
- * will simply not be formatted exactly as intended.
- *
- * <h3>More information</h3>
- *
- * See <a href="https://github.com/google/guava/wiki/ConditionalFailuresExplained">Conditional
- * failures explained</a> in the Guava User Guide for advice on when this class should be used.
+ * 与 Preconditions 一样，Verify 使用 Strings.lenientFormat 来格式化错误消息模板字符串。
+ * 这只支持 "%s" 说明符，不支持 java.util.Formatter 的全部说明符。但是，即使参数数量与格式
+ * 字符串中 "%s" 的出现次数不匹配，Verify 仍会按预期运行，并在错误消息中包含所有参数值。
+ * As with Preconditions, Verify uses Strings.lenientFormat to format error message templates.
+ * This only supports the "%s" specifier, not the full range of Formatter specifiers.
  *
  * @since 17.0
  */

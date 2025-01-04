@@ -62,85 +62,77 @@ import javax.annotation.CheckForNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
+ * 异步计算管道中的一个步骤。当计算的最后一个步骤完成时，在计算过程中捕获的对象会被关闭。
  * A step in a pipeline of an asynchronous computation. When the last step in the computation is
  * complete, some objects captured during the computation are closed.
  *
- * <p>A pipeline of {@code ClosingFuture}s is a tree of steps. Each step represents either an
+ * <p>ClosingFuture 管道是一个步骤树。每个步骤代表一个异步计算的中间值，或者表示操作失败或取消的异常。
+ * 从步骤中提取值或异常的唯一方法是将该步骤声明为管道的最后一步。我们将成功步骤的"值"或任何步骤的"结果"
+ * （值或异常）统称为结果。
+ * A pipeline of {@code ClosingFuture}s is a tree of steps. Each step represents either an
  * asynchronously-computed intermediate value, or else an exception that indicates the failure or
  * cancellation of the operation so far. The only way to extract the value or exception from a step
- * is by declaring that step to be the last step of the pipeline. Nevertheless, we refer to the
- * "value" of a successful step or the "result" (value or exception) of any step.
+ * is by declaring that step to be the last step of the pipeline.
  *
  * <ol>
- *   <li>A pipeline starts at its leaf step (or steps), which is created from either a callable
+ *   <li>管道从叶子步骤开始，可以从可调用块或 ListenableFuture 创建。
+ *       A pipeline starts at its leaf step (or steps), which is created from either a callable
  *       block or a {@link ListenableFuture}.
- *   <li>Each other step is derived from one or more input steps. At each step, zero or more objects
+ *   
+ *   <li>其他每个步骤都从一个或多个输入步骤派生。在每个步骤中，可以捕获零个或多个对象以供后续关闭。
+ *       Each other step is derived from one or more input steps. At each step, zero or more objects
  *       can be captured for later closing.
- *   <li>There is one last step (the root of the tree), from which you can extract the final result
+ *   
+ *   <li>最后一个步骤（树的根节点）用于提取计算的最终结果。当结果可用（或计算失败）后，管道中所有步骤
+ *       捕获的对象都将被关闭。
+ *       There is one last step (the root of the tree), from which you can extract the final result
  *       of the computation. After that result is available (or the computation fails), all objects
  *       captured by any of the steps in the pipeline are closed.
  * </ol>
  *
- * <h3>Starting a pipeline</h3>
+ * <h3>启动管道 Starting a pipeline</h3>
+ * 通过可能捕获对象以供后续关闭的可调用块启动 ClosingFuture 管道。如果要从不需要后续关闭资源的 
+ * ListenableFuture 启动管道，可以使用 from(ListenableFuture) 方法。
  *
- * Start a {@code ClosingFuture} pipeline {@linkplain #submit(ClosingCallable, Executor) from a
- * callable block} that may capture objects for later closing. To start a pipeline from a {@link
- * ListenableFuture} that doesn't create resources that should be closed later, you can use {@link
- * #from(ListenableFuture)} instead.
- *
- * <h3>Derived steps</h3>
- *
- * A {@code ClosingFuture} step can be derived from one or more input {@code ClosingFuture} steps in
- * ways similar to {@link FluentFuture}s:
- *
+ * <h3>派生步骤 Derived steps</h3>
+ * ClosingFuture 步骤可以通过类似于 FluentFuture 的方式从一个或多个输入步骤派生：
  * <ul>
- *   <li>by transforming the value from a successful input step,
- *   <li>by catching the exception from a failed input step, or
- *   <li>by combining the results of several input steps.
+ *   <li>通过转换成功输入步骤的值
+ *   <li>通过捕获失败输入步骤的异常
+ *   <li>通过组合多个输入步骤的结果
  * </ul>
  *
- * Each derivation can capture the next value or any intermediate objects for later closing.
+ * 每个派生操作都可以捕获下一个值或任何中间对象以供后续关闭。一个步骤最多只能作为一个派生步骤的输入。
+ * 一旦对其进行转换、异常捕获或组合操作，就不能再对其执行其他操作，包括将其声明为管道的最后一步。
  *
- * <p>A step can be the input to at most one derived step. Once you transform its value, catch its
- * exception, or combine it with others, you cannot do anything else with it, including declare it
- * to be the last step of the pipeline.
+ * <h4>转换 Transforming</h4>
+ * 要通过异步方式将函数应用于输入步骤的值来派生下一个步骤，在输入步骤上调用 transform 或 
+ * transformAsync 方法。
  *
- * <h4>Transforming</h4>
+ * <h4>异常捕获 Catching</h4>
+ * 要从失败的输入步骤派生下一个步骤，在输入步骤上调用 catching 或 catchingAsync 方法。
  *
- * To derive the next step by asynchronously applying a function to an input step's value, call
- * {@link #transform(ClosingFunction, Executor)} or {@link #transformAsync(AsyncClosingFunction,
- * Executor)} on the input step.
+ * <h4>组合 Combining</h4>
+ * 要从两个或更多输入步骤派生 ClosingFuture，将输入步骤传递给 whenAllComplete 或 
+ * whenAllSucceed 方法或其重载版本。
  *
- * <h4>Catching</h4>
+ * <h3>取消操作 Cancelling</h3>
+ * 管道中的任何步骤都可以被取消，即使在已经派生出其他步骤之后，其语义与取消 Future 相同。此外，
+ * 成功取消的步骤将立即开始关闭它及其输入步骤捕获的所有对象。
  *
- * To derive the next step from a failed input step, call {@link #catching(Class, ClosingFunction,
- * Executor)} or {@link #catchingAsync(Class, AsyncClosingFunction, Executor)} on the input step.
+ * <h3>结束管道 Ending a pipeline</h3>
+ * 每个 ClosingFuture 管道都必须结束。要结束管道，需要决定是自动关闭还是手动关闭捕获的对象。
  *
- * <h4>Combining</h4>
- *
- * To derive a {@code ClosingFuture} from two or more input steps, pass the input steps to {@link
- * #whenAllComplete(Iterable)} or {@link #whenAllSucceed(Iterable)} or its overloads.
- *
- * <h3>Cancelling</h3>
- *
- * Any step in a pipeline can be {@linkplain #cancel(boolean) cancelled}, even after another step
- * has been derived, with the same semantics as cancelling a {@link Future}. In addition, a
- * successfully cancelled step will immediately start closing all objects captured for later closing
- * by it and by its input steps.
- *
- * <h3>Ending a pipeline</h3>
- *
- * Each {@code ClosingFuture} pipeline must be ended. To end a pipeline, decide whether you want to
- * close the captured objects automatically or manually.
- *
- * <h4>Automatically closing</h4>
- *
+ * <h4>自动关闭 Automatically closing</h4>
+ * 你可以通过调用 finishToFuture() 来获取一个代表管道最后一步结果的 Future。管道捕获的所有待关闭对象
+ * 将在返回的 Future 完成后开始异步关闭：Future 在关闭开始之前就完成，而不是在关闭完成后才完成。
  * You can extract a {@link Future} that represents the result of the last step in the pipeline by
  * calling {@link #finishToFuture()}. All objects the pipeline has captured for closing will begin
  * to be closed asynchronously <b>after</b> the returned {@code Future} is done: the future
  * completes before closing starts, rather than once it has finished.
  *
  * <pre>{@code
+ * // 示例代码：自动关闭资源
  * FluentFuture<UserName> userName =
  *     ClosingFuture.submit(
  *             closer -> closer.eventuallyClose(database.newTransaction(), closingExecutor),
@@ -151,16 +143,20 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  *         .finishToFuture();
  * }</pre>
  *
+ * 在这个例子中，当 userName Future 完成时，事务和查询结果游标都会被关闭，即使操作被取消或失败。
  * In this example, when the {@code userName} {@link Future} is done, the transaction and the query
  * result cursor will both be closed, even if the operation is cancelled or fails.
  *
- * <h4>Manually closing</h4>
+ * <h4>手动关闭 Manually closing</h4>
  *
+ * 如果你想在使用完最终结果后手动关闭捕获的对象，调用 finishToValueAndCloser() 来获取一个持有最终结果的对象。
+ * 然后调用 closeAsync() 来关闭捕获的对象。
  * If you want to close the captured objects manually, after you've used the final result, call
  * {@link #finishToValueAndCloser(ValueAndCloserConsumer, Executor)} to get an object that holds the
  * final result. You then call {@link ValueAndCloser#closeAsync()} to close the captured objects.
  *
  * <pre>{@code
+ * 示例代码：手动关闭资源
  *     ClosingFuture.submit(
  *             closer -> closer.eventuallyClose(database.newTransaction(), closingExecutor),
  *             executor)
@@ -170,19 +166,22 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  *     .finishToValueAndCloser(
  *         valueAndCloser -> this.userNameValueAndCloser = valueAndCloser, executor);
  *
- * // later
- * try { // get() will throw if the operation failed or was cancelled.
+ *  稍后使用
+ * try { // 如果操作失败或被取消，get() 将抛出异常
  *   UserName userName = userNameValueAndCloser.get();
- *   // do something with userName
+ *  使用 userName 做一些操作
  * } finally {
  *   userNameValueAndCloser.closeAsync();
  * }
  * }</pre>
  *
+ * 在这个例子中，当调用 userNameValueAndCloser.closeAsync() 时，事务和查询结果游标都会被关闭，
+ * 即使操作被取消或失败。
  * In this example, when {@code userNameValueAndCloser.closeAsync()} is called, the transaction and
  * the query result cursor will both be closed, even if the operation is cancelled or fails.
  *
- * <p>Note that if you don't call {@code closeAsync()}, the captured objects will not be closed. The
+ * 注意：如果你不调用 closeAsync()，捕获的对象将不会被关闭。上面描述的自动关闭方式更安全。
+ * Note that if you don't call {@code closeAsync()}, the captured objects will not be closed. The
  * automatic-closing approach described above is safer.
  *
  * @param <V> the type of the value of this step
